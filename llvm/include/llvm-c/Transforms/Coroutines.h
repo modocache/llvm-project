@@ -40,7 +40,7 @@ void LLVMAddCoroSplitPass(LLVMPassManagerRef PM);
 /** See llvm::createCoroElideLegacyPass function. */
 void LLVMAddCoroElidePass(LLVMPassManagerRef PM);
 
-/** See llvm::createCoroCleanupPass function. */
+/** See llvm::createCoroCleanupLegacyPass function. */
 void LLVMAddCoroCleanupPass(LLVMPassManagerRef PM);
 
 /**
