@@ -24,7 +24,7 @@ class PassRegistry;
 void initializeCoroEarlyLegacyPass(PassRegistry &);
 void initializeCoroSplitLegacyPass(PassRegistry &);
 void initializeCoroElideLegacyPass(PassRegistry &);
-void initializeCoroCleanupPass(PassRegistry &);
+void initializeCoroCleanupLegacyPass(PassRegistry &);
 
 // CoroEarly pass marks every function that has coro.begin with a string
 // attribute "coroutine.presplit"="0". CoroSplit pass processes the coroutine

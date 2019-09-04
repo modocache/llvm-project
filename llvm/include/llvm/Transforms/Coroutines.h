@@ -30,7 +30,7 @@ Pass *createCoroSplitLegacyPass();
 Pass *createCoroElideLegacyPass();
 
 /// Lower all remaining coroutine intrinsics.
-Pass *createCoroCleanupPass();
+Pass *createCoroCleanupLegacyPass();
 
 }
 

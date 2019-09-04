@@ -46,7 +46,7 @@ void llvm::initializeCoroutines(PassRegistry &Registry) {
   initializeCoroEarlyLegacyPass(Registry);
   initializeCoroSplitLegacyPass(Registry);
   initializeCoroElideLegacyPass(Registry);
-  initializeCoroCleanupPass(Registry);
+  initializeCoroCleanupLegacyPass(Registry);
 }
 
 static void addCoroutineOpt0Passes(const PassManagerBuilder &Builder,
@@ -55,7 +55,7 @@ static void addCoroutineOpt0Passes(const PassManagerBuilder &Builder,
   PM.add(createCoroElideLegacyPass());
 
   PM.add(createBarrierNoopPass());
-  PM.add(createCoroCleanupPass());
+  PM.add(createCoroCleanupLegacyPass());
 }
 
 static void addCoroutineEarlyPasses(const PassManagerBuilder &Builder,
@@ -75,7 +75,7 @@ static void addCoroutineSCCPasses(const PassManagerBuilder &Builder,
 
 static void addCoroutineOptimizerLastPasses(const PassManagerBuilder &Builder,
                                             legacy::PassManagerBase &PM) {
-  PM.add(createCoroCleanupPass());
+  PM.add(createCoroCleanupLegacyPass());
 }
 
 void llvm::addCoroutinePassesToExtensionPoints(PassManagerBuilder &Builder) {
@@ -647,5 +647,5 @@ void LLVMAddCoroElidePass(LLVMPassManagerRef PM) {
 }
 
 void LLVMAddCoroCleanupPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createCoroCleanupPass());
+  unwrap(PM)->add(createCoroCleanupLegacyPass());
 }
