@@ -21,7 +21,7 @@ class CallGraph;
 class CallGraphSCC;
 class PassRegistry;
 
-void initializeCoroEarlyPass(PassRegistry &);
+void initializeCoroEarlyLegacyPass(PassRegistry &);
 void initializeCoroSplitPass(PassRegistry &);
 void initializeCoroElidePass(PassRegistry &);
 void initializeCoroCleanupPass(PassRegistry &);

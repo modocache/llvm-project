@@ -31,7 +31,7 @@ LLVM_C_EXTERN_C_BEGIN
  * @{
  */
 
-/** See llvm::createCoroEarlyPass function. */
+/** See llvm::createCoroEarlyLegacyPass function. */
 void LLVMAddCoroEarlyPass(LLVMPassManagerRef PM);
 
 /** See llvm::createCoroSplitPass function. */

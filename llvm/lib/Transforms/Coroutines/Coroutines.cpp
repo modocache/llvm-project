@@ -43,7 +43,7 @@
 using namespace llvm;
 
 void llvm::initializeCoroutines(PassRegistry &Registry) {
-  initializeCoroEarlyPass(Registry);
+  initializeCoroEarlyLegacyPass(Registry);
   initializeCoroSplitPass(Registry);
   initializeCoroElidePass(Registry);
   initializeCoroCleanupPass(Registry);
@@ -60,7 +60,7 @@ static void addCoroutineOpt0Passes(const PassManagerBuilder &Builder,
 
 static void addCoroutineEarlyPasses(const PassManagerBuilder &Builder,
                                     legacy::PassManagerBase &PM) {
-  PM.add(createCoroEarlyPass());
+  PM.add(createCoroEarlyLegacyPass());
 }
 
 static void addCoroutineScalarOptimizerPasses(const PassManagerBuilder &Builder,
@@ -635,7 +635,7 @@ void AnyCoroIdRetconInst::checkWellFormed() const {
 }
 
 void LLVMAddCoroEarlyPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createCoroEarlyPass());
+  unwrap(PM)->add(createCoroEarlyLegacyPass());
 }
 
 void LLVMAddCoroSplitPass(LLVMPassManagerRef PM) {
