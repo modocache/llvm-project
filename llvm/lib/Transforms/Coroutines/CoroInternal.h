@@ -23,7 +23,7 @@ class PassRegistry;
 
 void initializeCoroEarlyLegacyPass(PassRegistry &);
 void initializeCoroSplitLegacyPass(PassRegistry &);
-void initializeCoroElidePass(PassRegistry &);
+void initializeCoroElideLegacyPass(PassRegistry &);
 void initializeCoroCleanupPass(PassRegistry &);
 
 // CoroEarly pass marks every function that has coro.begin with a string

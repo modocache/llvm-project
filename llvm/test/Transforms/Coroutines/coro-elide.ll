@@ -1,6 +1,7 @@
 ; Tests that the coro.destroy and coro.resume are devirtualized where possible,
 ; SCC pipeline restarts and inlines the direct calls.
 ; RUN: opt < %s -S -inline -coro-elide -dce | FileCheck %s
+; RUN: opt < %s -S -passes='cgscc(repeat<2>(inline,function(coro-elide,dce)))' | FileCheck %s
 
 declare void @print(i32) nounwind
 
