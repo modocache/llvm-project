@@ -5,19 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// This pass builds the coroutine frame and outlines resume and destroy parts
-// of the coroutine into separate functions.
-//
-// We present a coroutine to an LLVM as an ordinary function with suspension
-// points marked up with intrinsics. We let the optimizer party on the coroutine
-// as a single function for as long as possible. Shortly before the coroutine is
-// eligible to be inlined into its callers, we split up the coroutine into parts
-// corresponding to an initial, resume and destroy invocations of the coroutine,
-// add them to the current SCC and restart the IPO pipeline to optimize the
-// coroutine subfunctions we extracted before proceeding to the caller of the
-// coroutine.
-//===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "CoroInstr.h"
 #include "CoroInternal.h"
 #include "llvm/ADT/DenseMap.h"
@@ -1329,19 +1318,7 @@ namespace {
   };
 }
 
-static void splitCoroutine(Function &F, coro::Shape &Shape,
-                           SmallVectorImpl<Function *> &Clones) {
-  switch (Shape.ABI) {
-  case coro::ABI::Switch:
-    return splitSwitchCoroutine(F, Shape, Clones);
-  case coro::ABI::Retcon:
-  case coro::ABI::RetconOnce:
-    return splitRetconCoroutine(F, Shape, Clones);
-  }
-  llvm_unreachable("bad ABI kind");
-}
-
-static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
+static coro::Shape splitCoroutine(Function &F, SmallVector<Function*, 4> &Clones) {
   PrettyStackTraceFunction prettyStackTrace(F);
 
   // The suspend-crossing algorithm in buildCoroutineFrame get tripped
@@ -1350,31 +1327,141 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
 
   coro::Shape Shape(F);
   if (!Shape.CoroBegin)
-    return;
+    return Shape;
 
   simplifySuspendPoints(Shape);
   buildCoroutineFrame(F, Shape);
   replaceFrameSize(Shape);
-
-  SmallVector<Function*, 4> Clones;
 
   // If there are no suspend points, no split required, just remove
   // the allocation and deallocation blocks, they are not needed.
   if (Shape.CoroSuspends.empty()) {
     handleNoSuspendCoroutine(Shape);
   } else {
-    splitCoroutine(F, Shape, Clones);
+    switch (Shape.ABI) {
+    case coro::ABI::Switch:
+      splitSwitchCoroutine(F, Shape, Clones);
+      break;
+    case coro::ABI::Retcon:
+    case coro::ABI::RetconOnce:
+      splitRetconCoroutine(F, Shape, Clones);
+      break;
+    }
   }
 
   // Replace all the swifterror operations in the original function.
   // This invalidates SwiftErrorOps in the Shape.
   replaceSwiftErrorOps(F, Shape, nullptr);
 
+  return Shape;
+}
+
+static void updateCallGraphAfterSplit(Function &F, coro::Shape &Shape,
+                                      SmallVector<Function *, 4> &Clones,
+                                      CallGraph &CG, CallGraphSCC &SCC) {
   removeCoroEnds(Shape, &CG);
   postSplitCleanup(F);
 
   // Update call graph and add the functions we created to the SCC.
   coro::updateCallGraph(F, Clones, CG, SCC);
+}
+
+static void buildLazyCallGraphNode(LazyCallGraph::Node &N,
+                                   LazyCallGraph::SCC &C,
+                                   CGSCCAnalysisManager &AM, LazyCallGraph &CG,
+                                   CGSCCUpdateResult &UR) {
+  Function &F = N.getFunction();
+  LazyCallGraph::RefSCC &RC = C.getOuterRefSCC();
+
+  // Look for calls by this function.
+  for (Instruction &I : instructions(F))
+    if (auto CS = CallSite(&I)) {
+      Function *Callee = CS.getCalledFunction();
+      LazyCallGraph::Node &CalleeNode = CG.get(*Callee);
+      CalleeNode.populate();
+      assert(CalleeNode.isPopulated());
+
+      RC.insertTrivialRefEdge(N, CalleeNode);
+      if (!Callee->isDeclaration())
+        RC.switchInternalEdgeToCall(N, CalleeNode);
+
+      CG.buildRefSCCs();
+      LazyCallGraph::SCC &NewC = *CG.lookupSCC(N);
+      C = updateCGAndAnalysisManagerForFunctionPass(CG, NewC, N, AM, UR);
+      LLVM_DEBUG(dbgs() << "Updated inlining SCC: " << C << "\n");
+    }
+}
+
+static void updateCallGraphAfterSplit(Function &F, coro::Shape &Shape,
+                                      SmallVector<Function *, 4> &Clones,
+                                      LazyCallGraph::SCC &C,
+                                      CGSCCAnalysisManager &AM,
+                                      LazyCallGraph &CG, CGSCCUpdateResult &UR) {
+  assert(Shape.ABI == coro::ABI::Switch);
+
+  // Remove calls to llvm.coro.end in the original function.
+  for (CoroEndInst *End : Shape.CoroEnds) {
+    auto &Context = End->getContext();
+    End->replaceAllUsesWith(ConstantInt::getFalse(Context));
+    End->eraseFromParent();
+  }
+
+  postSplitCleanup(F);
+
+  // Update call graph and add the functions we created to the SCC.
+  // Rebuild CGN after we extracted parts of the code from ParentFunc into
+  // NewFuncs. Builds CGNs for the NewFuncs and adds them to the current SCC.
+  // coro::updateCallGraph(F, Clones, CG, SCC);
+
+  // TODO modocache: Basically what we want to do here is:
+  // 1. For the original function foo:
+  //    1a. Update all outgoing edges. The original implementation does this
+  //        by removing all edges, then adding them back by looping over the
+  //        call instructions in the function.
+  // 2. For the clone functions foo.resume, foo.destroy, foo.cleanup:
+  //    2a. Add nodes for those functions into the call graph.
+  //    2b. Update all outgoing edges, just like above.
+
+  // Rebuild CGN from scratch for the ParentFunc
+  // auto *ParentNode = CG[&ParentFunc];
+  LazyCallGraph::Node &N = *CG.lookup(F);
+  LazyCallGraph::RefSCC &RC = C.getOuterRefSCC();
+
+  // ParentNode->removeAllCalledFunctions();
+  for (LazyCallGraph::Edge &E : *N) {
+    LazyCallGraph::Node &TargetNode = E.getNode();
+    LazyCallGraph::SCC &TargetSCC = *CG.lookupSCC(TargetNode);
+    LazyCallGraph::RefSCC &TargetRC = TargetSCC.getOuterRefSCC();
+    if (&RC == &TargetRC) {
+      if (E.isCall())
+        RC.switchInternalEdgeToRef(N, TargetNode);
+      RC.removeInternalRefEdge(N, &TargetNode);
+    } else
+      RC.removeOutgoingEdge(N, TargetNode);
+  }
+  CG.buildRefSCCs();
+  LazyCallGraph::SCC &NewC = *CG.lookupSCC(N);
+
+  // buildCGN(CG, ParentNode);
+  buildLazyCallGraphNode(N, NewC, AM, CG, UR);
+
+  // SmallVector<CallGraphNode *, 8> Nodes(SCC.begin(), SCC.end());
+  //
+  // for (Function *F : NewFuncs) {
+  //   CallGraphNode *Callee = CG.getOrInsertFunction(F);
+  //   Nodes.push_back(Callee);
+  //   buildCGN(CG, Callee);
+  // }
+  for (Function *CloneFunction : Clones) {
+    LazyCallGraph::Node &CloneNode = CG.get(*CloneFunction);
+    buildLazyCallGraphNode(CloneNode, C, AM, CG, UR);
+  }
+
+  // SCC.initialize(Nodes);
+  CG.buildRefSCCs();
+
+  C = updateCGAndAnalysisManagerForFunctionPass(CG, C, N, AM, UR);
+  LLVM_DEBUG(dbgs() << "Updated inlining SCC: " << C << "\n");
 }
 
 // When we see the coroutine the first time, we insert an indirect call to a
@@ -1507,17 +1594,55 @@ static bool replaceAllPrepares(Function *PrepareFn, CallGraph &CG) {
   return Changed;
 }
 
-//===----------------------------------------------------------------------===//
-//                              Top Level Driver
-//===----------------------------------------------------------------------===//
+static bool declaresCoroSplitIntrinsics(Module &M) {
+  return coro::declaresIntrinsics(M, {"llvm.coro.begin",
+                                      "llvm.coro.prepare.retcon"});
+}
+
+PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
+                                     CGSCCAnalysisManager &AM,
+                                     LazyCallGraph &CG, CGSCCUpdateResult &UR) {
+  // NB: One invariant of a valid LazyCallGraph::SCC is that it must contain a
+  //     non-zero number of nodes, so we assume that here and grab the first
+  //     node's function's module.
+  Module &M = *C.begin()->getFunction().getParent();
+  if (!declaresCoroSplitIntrinsics(M))
+    return PreservedAnalyses::all();
+
+  // Find coroutines for processing. The coro-early pass will have marked them
+  // with an attribute.
+  SmallVector<Function *, 4> Coroutines;
+  for (auto &N : C) {
+    auto &F = N.getFunction();
+    if (F.hasFnAttribute(CORO_PRESPLIT_ATTR))
+      Coroutines.push_back(&F);
+  }
+
+  if (Coroutines.empty())
+    return PreservedAnalyses::all();
+
+  // createDevirtTriggerFunc();
+
+  for (Function *F : Coroutines) {
+    LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '"
+                      << F->getName() << "'\n");
+    F->removeFnAttr(CORO_PRESPLIT_ATTR);
+    SmallVector<Function*, 4> Clones;
+    coro::Shape Shape = splitCoroutine(*F, Clones);
+    assert(Shape.ABI == coro::ABI::Switch);
+    updateCallGraphAfterSplit(*F, Shape, Clones, C, AM, CG, UR);
+  }
+
+  return PreservedAnalyses::none();
+}
 
 namespace {
 
-struct CoroSplit : public CallGraphSCCPass {
+struct CoroSplitLegacy : public CallGraphSCCPass {
   static char ID; // Pass identification, replacement for typeid
 
-  CoroSplit() : CallGraphSCCPass(ID) {
-    initializeCoroSplitPass(*PassRegistry::getPassRegistry());
+  CoroSplitLegacy() : CallGraphSCCPass(ID) {
+    initializeCoroSplitLegacyPass(*PassRegistry::getPassRegistry());
   }
 
   bool Run = false;
@@ -1525,9 +1650,7 @@ struct CoroSplit : public CallGraphSCCPass {
   // A coroutine is identified by the presence of coro.begin intrinsic, if
   // we don't have any, this pass has nothing to do.
   bool doInitialization(CallGraph &CG) override {
-    Run = coro::declaresIntrinsics(CG.getModule(),
-                                   {"llvm.coro.begin",
-                                    "llvm.coro.prepare.retcon"});
+    Run = declaresCoroSplitIntrinsics(CG.getModule());
     return CallGraphSCCPass::doInitialization(CG);
   }
 
@@ -1569,11 +1692,11 @@ struct CoroSplit : public CallGraphSCCPass {
         continue;
       }
       F->removeFnAttr(CORO_PRESPLIT_ATTR);
-      splitCoroutine(*F, CG, SCC);
-    }
 
-    if (PrepareFn)
-      replaceAllPrepares(PrepareFn, CG);
+      SmallVector<Function*, 4> Clones;
+      coro::Shape Shape = splitCoroutine(*F, Clones);
+      updateCallGraphAfterSplit(*F, Shape, Clones, CG, SCC);
+    }
 
     return true;
   }
@@ -1587,16 +1710,16 @@ struct CoroSplit : public CallGraphSCCPass {
 
 } // end anonymous namespace
 
-char CoroSplit::ID = 0;
+char CoroSplitLegacy::ID = 0;
 
 INITIALIZE_PASS_BEGIN(
-    CoroSplit, "coro-split",
+    CoroSplitLegacy, "coro-split",
     "Split coroutine into a set of functions driving its state machine", false,
     false)
 INITIALIZE_PASS_DEPENDENCY(CallGraphWrapperPass)
 INITIALIZE_PASS_END(
-    CoroSplit, "coro-split",
+    CoroSplitLegacy, "coro-split",
     "Split coroutine into a set of functions driving its state machine", false,
     false)
 
-Pass *llvm::createCoroSplitPass() { return new CoroSplit(); }
+Pass *llvm::createCoroSplitLegacyPass() { return new CoroSplitLegacy(); }
