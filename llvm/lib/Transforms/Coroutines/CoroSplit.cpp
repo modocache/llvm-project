@@ -1369,7 +1369,7 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
 // When we see the coroutine the first time, we insert an indirect call to a
 // devirt trigger function and mark the coroutine that it is now ready for
 // split.
-static void prepareForSplit(Function &F, CallGraph &CG) {
+static llvm::CallBase *createIndirectCallToDevirtTrigger(Function &F) {
   Module &M = *F.getParent();
   LLVMContext &Context = F.getContext();
 #ifndef NDEBUG
@@ -1391,11 +1391,19 @@ static void prepareForSplit(Function &F, CallGraph &CG) {
       Lowerer.makeSubFnCall(Null, CoroSubFnInst::RestartTrigger, InsertPt);
   FunctionType *FnTy = FunctionType::get(Type::getVoidTy(Context),
                                          {Type::getInt8PtrTy(Context)}, false);
-  auto *IndirectCall = CallInst::Create(FnTy, DevirtFnAddr, Null, "", InsertPt);
+  return CallInst::Create(FnTy, DevirtFnAddr, Null, "", InsertPt);
+}
 
+static void
+addIndirectCallToDevirtTriggerToCallGraph(llvm::CallBase *IndirectCall,
+                                          Function &F, CallGraph &CG) {
   // Update CG graph with an indirect call we just added.
   CG[&F]->addCalledFunction(IndirectCall, CG.getCallsExternalNode());
 }
+
+static void addIndirectCallToDevirtTriggerToCallGraph(
+    llvm::CallBase *IndirectCall, Function &F, LazyCallGraph::SCC &C,
+    LazyCallGraph &CG, CGSCCUpdateResult &UR) {}
 
 // Make sure that there is a devirtualization trigger function that CoroSplit
 // pass uses the force restart CGSCC pipeline. If devirt trigger function is not
@@ -1552,7 +1560,8 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
     LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
                       << "' state: " << Value << "\n");
     if (Value == UNPREPARED_FOR_SPLIT) {
-      // prepareForSplit(*F, CG);
+      auto *IndirectCall = createIndirectCallToDevirtTrigger(*F);
+      addIndirectCallToDevirtTriggerToCallGraph(IndirectCall, *F, C, CG, UR);
       continue;
     }
     F->removeFnAttr(CORO_PRESPLIT_ATTR);
@@ -1666,7 +1675,8 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
       LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
                         << "' state: " << Value << "\n");
       if (Value == UNPREPARED_FOR_SPLIT) {
-        prepareForSplit(*F, CG);
+        auto *IndirectCall = createIndirectCallToDevirtTrigger(*F);
+        addIndirectCallToDevirtTriggerToCallGraph(IndirectCall, *F, CG);
         continue;
       }
       F->removeFnAttr(CORO_PRESPLIT_ATTR);
