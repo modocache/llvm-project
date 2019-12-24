@@ -104,12 +104,22 @@ void llvm::registerCoroutinesPasses(PassBuilder &Builder) {
           // coro-early
           MPM.addPass(createModuleToFunctionPassAdaptor(CoroEarlyPass()));
 
-          // coro-split, coro-elide
-          CGSCCPassManager CGPM;
-          CGPM.addPass(CoroSplitPass());
-          CGPM.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
-          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(
-              createDevirtSCCRepeatedPass(std::move(CGPM), 2)));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroElidePass()));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+
+          // // coro-split, coro-elide
+          // CGSCCPassManager CGPM;
+          // CGPM.addPass(CoroSplitPass());
+          // CGPM.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
+          // MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(
+          //     createDevirtSCCRepeatedPass(std::move(CGPM), 2)));
+          //
+          // CGSCCPassManager CGPM2;
+          // CGPM2.addPass(CoroSplitPass());
+          // CGPM2.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
+          // MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(
+          //     createDevirtSCCRepeatedPass(std::move(CGPM2), 2)));
 
           // coro-cleanup
           MPM.addPass(createModuleToFunctionPassAdaptor(CoroCleanupPass()));
