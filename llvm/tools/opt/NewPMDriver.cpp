@@ -32,6 +32,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Coroutines.h"
 #include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/Debugify.h"
@@ -289,6 +290,9 @@ bool llvm::runPassPipeline(StringRef Arg0, Module &M, TargetMachine *TM,
         }
         return false;
       });
+
+  // Register a callback that creates coroutines lowering passes as needed.
+  registerCoroutinesPasses(PB);
 
 #ifdef LINK_POLLY_INTO_TOOLS
   polly::RegisterPollyPasses(PB);

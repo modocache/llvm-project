@@ -31,8 +31,13 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroElide.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -89,6 +94,29 @@ void llvm::addCoroutinePassesToExtensionPoints(PassManagerBuilder &Builder) {
                        addCoroutineScalarOptimizerPasses);
   Builder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                        addCoroutineOptimizerLastPasses);
+}
+
+void llvm::registerCoroutinesPasses(PassBuilder &Builder) {
+  Builder.registerPipelineParsingCallback(
+      [](StringRef Name, ModulePassManager &MPM,
+         ArrayRef<PassBuilder::PipelineElement>) {
+        if (Name == "coroutines") {
+          // coro-early
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroEarlyPass()));
+
+          // coro-split, coro-elide
+          CGSCCPassManager CGPM;
+          CGPM.addPass(CoroSplitPass());
+          CGPM.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(
+              createDevirtSCCRepeatedPass(std::move(CGPM), 2)));
+
+          // coro-cleanup
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroCleanupPass()));
+          return true;
+        }
+        return false;
+      });
 }
 
 // Construct the lowerer base class and initialize its members.
