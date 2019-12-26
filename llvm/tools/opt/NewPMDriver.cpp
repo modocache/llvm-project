@@ -32,6 +32,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Coroutines.h"
 #include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/Debugify.h"
@@ -291,6 +292,9 @@ bool llvm::runPassPipeline(StringRef Arg0, Module &M, TargetMachine *TM,
 #define HANDLE_EXTENSION(Ext)                                                  \
   get##Ext##PluginInfo().RegisterPassBuilderCallbacks(PB);
 #include "llvm/Support/Extension.def"
+
+  // Register a callback that creates coroutines lowering passes as needed.
+  registerCoroutinePipelineParsingCallback(PB, DebugPM);
 
   // Specially handle the alias analysis manager so that we can register
   // a custom pipeline of AA passes with it.

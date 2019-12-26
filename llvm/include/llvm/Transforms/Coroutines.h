@@ -14,9 +14,15 @@
 namespace llvm {
 
 class Pass;
+class PassBuilder;
 class PassManagerBuilder;
 
-/// Add all coroutine passes to appropriate extension points.
+/// Register a callback to parse coroutines passes in a pass pipeline.
+void registerCoroutinePipelineParsingCallback(PassBuilder &Builder,
+                                              bool DebugLogging = false);
+
+/// Add all coroutine passes to appropriate extension points using the legacy
+/// pass manager.
 void addCoroutinePassesToExtensionPoints(PassManagerBuilder &Builder);
 
 /// Lower coroutine intrinsics that are not needed by later passes.
