@@ -233,6 +233,7 @@ PipelineTuningOptions::PipelineTuningOptions() {
   SLPVectorization = RunSLPVectorization;
   LoopUnrolling = true;
   ForgetAllSCEVInLoopUnroll = ForgetSCEVInLoopUnroll;
+  Coroutines = false;
   LicmMssaOptCap = SetLicmMssaOptCap;
   LicmMssaNoAccForPromotionCap = SetLicmMssaNoAccForPromotionCap;
 }
@@ -711,6 +712,8 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   EarlyFPM.addPass(SROA());
   EarlyFPM.addPass(EarlyCSEPass());
   EarlyFPM.addPass(LowerExpectIntrinsicPass());
+  if (PTO.Coroutines)
+    EarlyFPM.addPass(CoroEarlyPass());
   if (Level == O3)
     EarlyFPM.addPass(CallSiteSplittingPass());
 
@@ -824,6 +827,11 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
       PGOOpt->Action == PGOOptions::SampleUse)
     IP.HotCallSiteThreshold = 0;
   MainCGPipeline.addPass(InlinerPass(IP));
+
+  if (PTO.Coroutines) {
+    MainCGPipeline.addPass(CoroSplitPass());
+    MainCGPipeline.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
+  }
 
   // Now deduce any function attributes based in the current code.
   MainCGPipeline.addPass(PostOrderFunctionAttrsPass());
@@ -1019,6 +1027,9 @@ ModulePassManager PassBuilder::buildModuleOptimizationPipeline(
   // pass needs to be run after any PRE or similar pass as it is essentially
   // inserting redundancies into the program. This even includes SimplifyCFG.
   OptimizePM.addPass(SpeculateAroundPHIsPass());
+
+  if (PTO.Coroutines)
+    OptimizePM.addPass(CoroCleanupPass());
 
   for (auto &C : OptimizerLastEPCallbacks)
     C(OptimizePM, Level);
