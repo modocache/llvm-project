@@ -2,6 +2,12 @@
 ; SCC pipeline restarts and inlines the direct calls.
 ; RUN: opt < %s -S -inline -coro-elide -dce | FileCheck %s
 
+; The new pass manager does not restart the pipeline due to devirtualization by
+; default. We insert a devirtualization repeater to make it so.
+; RUN: opt < %s -S \
+; RUN:   -passes='cgscc(repeat<2>(inline,function(coro-elide,dce)))' \
+; RUN:   | FileCheck %s
+
 declare void @print(i32) nounwind
 
 ; resume part of the coroutine
