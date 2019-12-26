@@ -31,8 +31,13 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroElide.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -89,6 +94,22 @@ void llvm::addCoroutinePassesToExtensionPoints(PassManagerBuilder &Builder) {
                        addCoroutineScalarOptimizerPasses);
   Builder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                        addCoroutineOptimizerLastPasses);
+}
+
+void llvm::registerCoroutinesPasses(PassBuilder &Builder) {
+  Builder.registerPipelineParsingCallback(
+      [](StringRef Name, ModulePassManager &MPM,
+         ArrayRef<PassBuilder::PipelineElement>) {
+        if (Name == "coroutines") {
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroEarlyPass()));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroElidePass()));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroCleanupPass()));
+          return true;
+        }
+        return false;
+      });
 }
 
 // Construct the lowerer base class and initialize its members.

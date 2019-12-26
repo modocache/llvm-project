@@ -9,6 +9,11 @@
 ; RUN:     -coro-early -coro-split -coro-elide -coro-cleanup 2>&1 | FileCheck %s
 ; RUN: opt < %s -disable-output -debug-pass=Arguments 2>&1 \
 ; RUN:     | FileCheck %s -check-prefix=NOCORO
+; RUN: opt < %s -disable-output -passes=coroutines -debug-pass-manager 2>&1 \
+; RUN:     | FileCheck %s -check-prefix=NEWPM
+; RUN: opt < %s -disable-output \
+; RUN:     -passes='coroutines,function(coro-early),cgscc(coro-split),function(coro-elide,coro-cleanup)' \
+; RUN:     -debug-pass-manager 2>&1 | FileCheck %s -check-prefix=NEWPM
 
 ; CHECK: coro-early
 ; CHECK: coro-split
@@ -19,6 +24,11 @@
 ; NOCORO-NOT: coro-split
 ; NOCORO-NOT: coro-elide
 ; NOCORO-NOT: coro-cleanup
+
+; NEWPM: CoroEarlyPass
+; NEWPM: CoroSplitPass
+; NEWPM: CoroElidePass
+; NEWPM: CoroCleanupPass
 
 define void @foo() {
   ret void
