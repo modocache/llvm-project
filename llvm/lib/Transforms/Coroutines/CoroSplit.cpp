@@ -5,19 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// This pass builds the coroutine frame and outlines resume and destroy parts
-// of the coroutine into separate functions.
-//
-// We present a coroutine to an LLVM as an ordinary function with suspension
-// points marked up with intrinsics. We let the optimizer party on the coroutine
-// as a single function for as long as possible. Shortly before the coroutine is
-// eligible to be inlined into its callers, we split up the coroutine into parts
-// corresponding to an initial, resume and destroy invocations of the coroutine,
-// add them to the current SCC and restart the IPO pipeline to optimize the
-// coroutine subfunctions we extracted before proceeding to the caller of the
-// coroutine.
-//===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "CoroInstr.h"
 #include "CoroInternal.h"
 #include "llvm/ADT/DenseMap.h"
@@ -1330,19 +1319,8 @@ namespace {
   };
 }
 
-static void splitCoroutine(Function &F, coro::Shape &Shape,
-                           SmallVectorImpl<Function *> &Clones) {
-  switch (Shape.ABI) {
-  case coro::ABI::Switch:
-    return splitSwitchCoroutine(F, Shape, Clones);
-  case coro::ABI::Retcon:
-  case coro::ABI::RetconOnce:
-    return splitRetconCoroutine(F, Shape, Clones);
-  }
-  llvm_unreachable("bad ABI kind");
-}
-
-static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
+static coro::Shape splitCoroutine(Function &F,
+                                  SmallVectorImpl<Function *> &Clones) {
   PrettyStackTraceFunction prettyStackTrace(F);
 
   // The suspend-crossing algorithm in buildCoroutineFrame get tripped
@@ -1351,25 +1329,41 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
 
   coro::Shape Shape(F);
   if (!Shape.CoroBegin)
-    return;
+    return Shape;
 
   simplifySuspendPoints(Shape);
   buildCoroutineFrame(F, Shape);
   replaceFrameSize(Shape);
-
-  SmallVector<Function*, 4> Clones;
 
   // If there are no suspend points, no split required, just remove
   // the allocation and deallocation blocks, they are not needed.
   if (Shape.CoroSuspends.empty()) {
     handleNoSuspendCoroutine(Shape);
   } else {
-    splitCoroutine(F, Shape, Clones);
+    switch (Shape.ABI) {
+    case coro::ABI::Switch:
+      splitSwitchCoroutine(F, Shape, Clones);
+      break;
+    case coro::ABI::Retcon:
+    case coro::ABI::RetconOnce:
+      splitRetconCoroutine(F, Shape, Clones);
+      break;
+    }
   }
 
   // Replace all the swifterror operations in the original function.
   // This invalidates SwiftErrorOps in the Shape.
   replaceSwiftErrorOps(F, Shape, nullptr);
+
+  return Shape;
+}
+
+static void
+updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
+                                   const SmallVectorImpl<Function *> &Clones,
+                                   CallGraph &CG, CallGraphSCC &SCC) {
+  if (!Shape.CoroBegin)
+    return;
 
   removeCoroEnds(Shape, &CG);
   postSplitCleanup(F);
@@ -1378,10 +1372,32 @@ static void splitCoroutine(Function &F, CallGraph &CG, CallGraphSCC &SCC) {
   coro::updateCallGraph(F, Clones, CG, SCC);
 }
 
+static void
+updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
+                                   const SmallVectorImpl<Function *> &Clones,
+                                   LazyCallGraph::SCC &C, LazyCallGraph &CG,
+                                   CGSCCUpdateResult &UR) {
+  if (!Shape.CoroBegin)
+    return;
+
+  for (llvm::CoroEndInst *End : Shape.CoroEnds) {
+    auto &Context = End->getContext();
+    End->replaceAllUsesWith(ConstantInt::getFalse(Context));
+    End->eraseFromParent();
+  }
+
+  postSplitCleanup(F);
+
+  for (Function *Clone : Clones) {
+    LazyCallGraph::Node &N = CG.get(*Clone);
+    N.populate();
+  }
+}
+
 // When we see the coroutine the first time, we insert an indirect call to a
 // devirt trigger function and mark the coroutine that it is now ready for
 // split.
-static void prepareForSplit(Function &F, CallGraph &CG) {
+static llvm::CallBase *createIndirectCallToDevirtTrigger(Function &F) {
   Module &M = *F.getParent();
   LLVMContext &Context = F.getContext();
 #ifndef NDEBUG
@@ -1403,20 +1419,22 @@ static void prepareForSplit(Function &F, CallGraph &CG) {
       Lowerer.makeSubFnCall(Null, CoroSubFnInst::RestartTrigger, InsertPt);
   FunctionType *FnTy = FunctionType::get(Type::getVoidTy(Context),
                                          {Type::getInt8PtrTy(Context)}, false);
-  auto *IndirectCall = CallInst::Create(FnTy, DevirtFnAddr, Null, "", InsertPt);
+  return CallInst::Create(FnTy, DevirtFnAddr, Null, "", InsertPt);
+}
 
+static void addIndirectCallToCallGraph(llvm::CallBase *IndirectCall,
+                                       const Function &F, CallGraph &CG) {
   // Update CG graph with an indirect call we just added.
   CG[&F]->addCalledFunction(IndirectCall, CG.getCallsExternalNode());
 }
 
 // Make sure that there is a devirtualization trigger function that the
 // coro-split pass uses to force a restart of the CGSCC pipeline. If the devirt
-// trigger function is not found, we will create one and add it to the current
-// SCC.
-static void createDevirtTriggerFunc(CallGraph &CG, CallGraphSCC &SCC) {
-  Module &M = CG.getModule();
+// trigger function is not found, we create one and return it. If it is found,
+// this returns null.
+static Function *createDevirtTriggerFunc(Module &M) {
   if (M.getFunction(CORO_DEVIRT_TRIGGER_FN))
-    return;
+    return nullptr;
 
   LLVMContext &C = M.getContext();
   auto *FnTy = FunctionType::get(Type::getVoidTy(C), Type::getInt8PtrTy(C),
@@ -1428,11 +1446,24 @@ static void createDevirtTriggerFunc(CallGraph &CG, CallGraphSCC &SCC) {
   auto *Entry = BasicBlock::Create(C, "entry", DevirtFn);
   ReturnInst::Create(C, Entry);
 
-  auto *Node = CG.getOrInsertFunction(DevirtFn);
+  return DevirtFn;
+}
 
+// Add the devirtualization trigger function to the call graph.
+static void addFunctionToCallGraph(const Function *DevirtFn, CallGraph &CG,
+                                   CallGraphSCC &SCC) {
+  auto *Node = CG.getOrInsertFunction(DevirtFn);
   SmallVector<CallGraphNode *, 8> Nodes(SCC.begin(), SCC.end());
   Nodes.push_back(Node);
   SCC.initialize(Nodes);
+}
+
+// Add the devirtualization trigger function to the (lazy) call graph.
+static void addFunctionToCallGraph(Function *DevirtFn,
+                                   LazyCallGraph::SCC &C, LazyCallGraph &CG,
+                                   CGSCCUpdateResult &UR) {
+  LazyCallGraph::Node &N = CG.get(*DevirtFn);
+  N.populate();
 }
 
 /// Replace a call to llvm.coro.prepare.retcon.
@@ -1509,9 +1540,68 @@ static bool replaceAllPrepares(Function *PrepareFn, CallGraph &CG) {
   return Changed;
 }
 
-//===----------------------------------------------------------------------===//
-//                              Top Level Driver
-//===----------------------------------------------------------------------===//
+static bool declaresCoroSplitIntrinsics(const Module &M) {
+  return coro::declaresIntrinsics(
+      M, {"llvm.coro.begin", "llvm.coro.prepare.retcon"});
+}
+
+PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
+                                     CGSCCAnalysisManager &AM,
+                                     LazyCallGraph &CG, CGSCCUpdateResult &UR) {
+  // NB: One invariant of a valid LazyCallGraph::SCC is that it must contain a
+  //     non-zero number of nodes, so we assume that here and grab the first
+  //     node's function's module.
+  Module &M = *C.begin()->getFunction().getParent();
+  if (!declaresCoroSplitIntrinsics(M))
+    return PreservedAnalyses::all();
+
+  // Check for uses of llvm.coro.prepare.retcon.
+  const auto *PrepareFn = M.getFunction("llvm.coro.prepare.retcon");
+  if (PrepareFn && PrepareFn->use_empty())
+    PrepareFn = nullptr;
+
+  // Find coroutines for processing.
+  SmallVector<Function *, 4> Coroutines;
+  for (const LazyCallGraph::Node &CGN : C) {
+    auto &F = CGN.getFunction();
+    if (F.hasFnAttribute(CORO_PRESPLIT_ATTR))
+      Coroutines.push_back(&F);
+  }
+
+  if (Coroutines.empty() && !PrepareFn)
+    return PreservedAnalyses::all();
+
+  if (Coroutines.empty())
+    llvm_unreachable("experimental pass manager cannot yet handle "
+                     "'llvm.coro.prepare.retcon'");
+
+  Function *DevirtFn = createDevirtTriggerFunc(M);
+  if (DevirtFn)
+    addFunctionToCallGraph(DevirtFn, C, CG, UR);
+
+  // Split all the coroutines.
+  for (Function *F : Coroutines) {
+    Attribute Attr = F->getFnAttribute(CORO_PRESPLIT_ATTR);
+    StringRef Value = Attr.getValueAsString();
+    LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
+                      << "' state: " << Value << "\n");
+    if (Value == UNPREPARED_FOR_SPLIT) {
+      createIndirectCallToDevirtTrigger(*F);
+      continue;
+    }
+    F->removeFnAttr(CORO_PRESPLIT_ATTR);
+
+    SmallVector<Function *, 4> Clones;
+    const coro::Shape Shape = splitCoroutine(*F, Clones);
+    updateCallGraphAfterCoroutineSplit(*F, Shape, Clones, C, CG, UR);
+  }
+
+  if (PrepareFn)
+    llvm_unreachable("experimental pass manager cannot yet handle "
+                     "'llvm.coro.prepare.retcon'");
+
+  return PreservedAnalyses::none();
+}
 
 namespace {
 
@@ -1527,9 +1617,7 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
   // A coroutine is identified by the presence of coro.begin intrinsic, if
   // we don't have any, this pass has nothing to do.
   bool doInitialization(CallGraph &CG) override {
-    Run = coro::declaresIntrinsics(CG.getModule(),
-                                   {"llvm.coro.begin",
-                                    "llvm.coro.prepare.retcon"});
+    Run = declaresCoroSplitIntrinsics(CG.getModule());
     return CallGraphSCCPass::doInitialization(CG);
   }
 
@@ -1558,7 +1646,9 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
     if (Coroutines.empty())
       return replaceAllPrepares(PrepareFn, CG);
 
-    createDevirtTriggerFunc(CG, SCC);
+    const Function *DevirtFn = createDevirtTriggerFunc(CG.getModule());
+    if (DevirtFn)
+      addFunctionToCallGraph(DevirtFn, CG, SCC);
 
     // Split all the coroutines.
     for (Function *F : Coroutines) {
@@ -1567,11 +1657,15 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
       LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
                         << "' state: " << Value << "\n");
       if (Value == UNPREPARED_FOR_SPLIT) {
-        prepareForSplit(*F, CG);
+        auto *IndirectCall = createIndirectCallToDevirtTrigger(*F);
+        addIndirectCallToCallGraph(IndirectCall, *F, CG);
         continue;
       }
       F->removeFnAttr(CORO_PRESPLIT_ATTR);
-      splitCoroutine(*F, CG, SCC);
+
+      SmallVector<Function*, 4> Clones;
+      const coro::Shape Shape = splitCoroutine(*F, Clones);
+      updateCallGraphAfterCoroutineSplit(*F, Shape, Clones, CG, SCC);
     }
 
     if (PrepareFn)
