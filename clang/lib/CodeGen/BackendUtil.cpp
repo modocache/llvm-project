@@ -49,6 +49,10 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/Coroutines.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroElide.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -1139,6 +1143,16 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
       if (LangOpts.Sanitize.has(SanitizerKind::LocalBounds))
         MPM.addPass(createModuleToFunctionPassAdaptor(BoundsCheckingPass()));
 
+      // For IR that makes use of coroutines intrinsics, coroutine passes must
+      // be run, even at -O0.
+      if (LangOpts.Coroutines) {
+        MPM.addPass(createModuleToFunctionPassAdaptor(CoroEarlyPass()));
+        MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+        MPM.addPass(createModuleToFunctionPassAdaptor(CoroElidePass()));
+        MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+        MPM.addPass(createModuleToFunctionPassAdaptor(CoroCleanupPass()));
+      }
+
       // Lastly, add semantically necessary passes for LTO.
       if (IsLTO || IsThinLTO) {
         MPM.addPass(CanonicalizeAliasesPass());
@@ -1210,6 +1224,15 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
               getInstrProfOptions(CodeGenOpts, LangOpts))
         PB.registerPipelineStartEPCallback([Options](ModulePassManager &MPM) {
           MPM.addPass(InstrProfiling(*Options, false));
+        });
+
+      if (LangOpts.Coroutines)
+        PB.registerPipelineStartEPCallback([](ModulePassManager &MPM) {
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroEarlyPass()));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroElidePass()));
+          MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(CoroSplitPass()));
+          MPM.addPass(createModuleToFunctionPassAdaptor(CoroCleanupPass()));
         });
 
       if (IsThinLTO) {
