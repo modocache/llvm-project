@@ -18,6 +18,23 @@
 
 using namespace llvm;
 
+LazyCallGraph::Node &CallGraphUpdater::createNode(LazyCallGraph &LCG,
+                                                  Function &Fn) {
+  assert(!LCG.lookup(Fn) && "node already exists");
+
+  LazyCallGraph::Node &CGNode = LCG.get(Fn);
+  LCG.NodeMap[&Fn] = &CGNode;
+  CGNode.DFSNumber = CGNode.LowLink = -1;
+  CGNode.populate();
+  return CGNode;
+}
+
+void CallGraphUpdater::addNodeToSCC(LazyCallGraph &LCG, LazyCallGraph::SCC &SCC,
+                                    LazyCallGraph::Node &N) {
+  SCC.Nodes.push_back(&N);
+  LCG.SCCMap[&N] = &SCC;
+}
+
 bool CallGraphUpdater::finalize() {
   if (!DeadFunctionsInComdats.empty()) {
     filterDeadComdatFunctions(*DeadFunctionsInComdats.front()->getParent(),
@@ -87,12 +104,26 @@ void CallGraphUpdater::registerOutlinedFunction(Function &NewFn) {
   if (CG) {
     CG->addToCallGraph(&NewFn);
   } else if (LCG) {
-    LazyCallGraph::Node &CGNode = LCG->get(NewFn);
-    CGNode.DFSNumber = CGNode.LowLink = -1;
-    CGNode.populate();
-    SCC->Nodes.push_back(&CGNode);
-    LCG->SCCMap[&CGNode] = SCC;
-    LCG->NodeMap[&NewFn] = &CGNode;
+    LazyCallGraph::Node &CGNode = createNode(*LCG, NewFn);
+    addNodeToSCC(*LCG, *SCC, CGNode);
+  }
+}
+
+void CallGraphUpdater::registerReferredToOutlinedFunction(Function &NewFn) {
+  if (CG) {
+    llvm_unreachable("registering referred to functions is not supported "
+                     "with CallGraph");
+  } else if (LCG) {
+    LazyCallGraph::Node &CGNode = createNode(*LCG, NewFn);
+
+    LazyCallGraph::RefSCC &RefSCC = SCC->getOuterRefSCC();
+    SmallVector<LazyCallGraph::Node *, 1> Nodes;
+    Nodes.push_back(&CGNode);
+    auto *NewSCC = LCG->createSCC(RefSCC, Nodes);
+    addNodeToSCC(*LCG, *NewSCC, CGNode);
+
+    RefSCC.SCCIndices[NewSCC] = RefSCC.SCCIndices.size();
+    RefSCC.SCCs.push_back(NewSCC);
   }
 }
 

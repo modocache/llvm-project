@@ -44,6 +44,13 @@ class CallGraphUpdater {
   CGSCCUpdateResult *UR = nullptr;
   ///}
 
+  /// Internal helpers that mutate LazyCallGraph state
+  ///{
+  static LazyCallGraph::Node &createNode(LazyCallGraph &LCG, Function &Fn);
+  static void addNodeToSCC(LazyCallGraph &LCG, LazyCallGraph::SCC &SCC,
+                           LazyCallGraph::Node &N);
+  ///}
+
 public:
   CallGraphUpdater() {}
   ~CallGraphUpdater() { finalize(); }
@@ -78,6 +85,11 @@ public:
   /// to update the call graph for the new function. Note that the old one
   /// still needs to be re-analyzed or manually updated.
   void registerOutlinedFunction(Function &NewFn);
+
+  /// If a new function was created by outlining, and the new function is only
+  /// referred to by the original function (i.e.: not called directly), this
+  /// method can be called to update the call graph for the new function.
+  void registerReferredToOutlinedFunction(Function &NewFn);
 
   /// Replace \p OldFn in the call graph (and SCC) with \p NewFn. The uses
   /// outside the call graph and the function \p OldFn are not modified.

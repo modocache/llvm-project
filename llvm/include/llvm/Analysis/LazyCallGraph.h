@@ -551,6 +551,7 @@ public:
   class RefSCC {
     friend class LazyCallGraph;
     friend class LazyCallGraph::Node;
+    friend class CallGraphUpdater;
 
     LazyCallGraph *G;
 
