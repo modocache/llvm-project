@@ -1387,11 +1387,6 @@ updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
   }
 
   postSplitCleanup(F);
-
-  // for (Function *Clone : Clones) {
-  //   LazyCallGraph::Node &N = CG.get(*Clone);
-  //   N.populate();
-  // }
 }
 
 // When we see the coroutine the first time, we insert an indirect call to a
@@ -1533,6 +1528,8 @@ static bool declaresCoroSplitIntrinsics(const Module &M) {
 PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
                                      CGSCCAnalysisManager &AM,
                                      LazyCallGraph &CG, CGSCCUpdateResult &UR) {
+  LLVM_DEBUG(dbgs() << "CoroSplit: run\n");
+
   // NB: One invariant of a valid LazyCallGraph::SCC is that it must contain a
   //     non-zero number of nodes, so we assume that here and grab the first
   //     node's function's module.
@@ -1562,14 +1559,9 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
 
   // Split all the coroutines.
   for (Function *F : Coroutines) {
-    Attribute Attr = F->getFnAttribute(CORO_PRESPLIT_ATTR);
-    StringRef Value = Attr.getValueAsString();
     LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
-                      << "' state: " << Value << "\n");
-    if (Value == UNPREPARED_FOR_SPLIT) {
-      F->addFnAttr(CORO_PRESPLIT_ATTR, PREPARED_FOR_SPLIT);
-      continue;
-    }
+                      << "'\n");
+
     F->removeFnAttr(CORO_PRESPLIT_ATTR);
 
     SmallVector<Function *, 4> Clones;
