@@ -830,7 +830,6 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   if (PTO.Coroutines) {
     MainCGPipeline.addPass(CoroSplitPass());
     MainCGPipeline.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
-    MainCGPipeline.addPass(CoroSplitPass());
   }
 
   // Now deduce any function attributes based in the current code.
