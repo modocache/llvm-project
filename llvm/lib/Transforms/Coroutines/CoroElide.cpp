@@ -285,6 +285,8 @@ static bool declaresCoroElideIntrinsics(Module &M) {
 }
 
 PreservedAnalyses CoroElidePass::run(Function &F, FunctionAnalysisManager &AM) {
+  LLVM_DEBUG(dbgs() << "CoroElide: run\n");
+
   auto &M = *F.getParent();
   if (!declaresCoroElideIntrinsics(M))
     return PreservedAnalyses::all();

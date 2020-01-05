@@ -1372,11 +1372,10 @@ updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
   coro::updateCallGraph(F, Clones, CG, SCC);
 }
 
-static void
-updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
-                                   const SmallVectorImpl<Function *> &Clones,
-                                   LazyCallGraph::SCC &C, LazyCallGraph &CG,
-                                   CGSCCUpdateResult &UR) {
+static void updateCallGraphAfterCoroutineSplit(
+    Function &F, const coro::Shape &Shape,
+    const SmallVectorImpl<Function *> &Clones, LazyCallGraph::SCC &C,
+    LazyCallGraph &CG, CGSCCAnalysisManager &AM, CGSCCUpdateResult &UR) {
   if (!Shape.CoroBegin)
     return;
 
@@ -1387,6 +1386,53 @@ updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
   }
 
   postSplitCleanup(F);
+
+  LazyCallGraph::RefSCC &RC = C.getOuterRefSCC();
+  LazyCallGraph::Node *N = CG.lookup(F);
+  assert(N && "coroutine node not in call graph");
+
+  for (Function *Clone : Clones) {
+    LLVM_DEBUG(dbgs() << "CoroSplit: updateCallGraphAfterCoroutineSplit for '"
+                      << Clone->getName() << "'\n");
+
+    // Insert the new funclet into the call graph.
+    // Crucially, we need to ensure that the funclet is inserted into the same
+    // SCC as the coroutine it was outlined from, so that we may add a trivial
+    // reference edge from the coroutine to the funclet. Doing so requires
+    // reaching into the internal guts of the LazyCallGraph and directly
+    // manipulating its Node-to-SCC and Function-to-Node mappings.
+    LazyCallGraph::Node &CloneNode = CG.get(*Clone);
+    C.Nodes.push_back(&CloneNode);
+    CG.SCCMap[&CloneNode] = &C;
+    CG.NodeMap[Clone] = &CloneNode;
+
+    // Once inserted, we ought to be able to look up the SCC for the funclet.
+    LazyCallGraph::SCC *CloneSCC = CG.lookupSCC(CloneNode);
+    assert(CloneSCC && "coroutine funclet SCC not in call graph");
+
+    // Construct the outgoing edges from the coroutine funclet to other nodes
+    // in the graph.
+    CloneNode.populate();
+
+    // This mirrors an assertion made within
+    // 'LazyCallGraph::RefSCC::insertTrivialEdge'. We know for a fact that this
+    // is a trivial reference edge, because just above we've ensured that the
+    // funclet node's SCC is the same as the SCC we're operating upon.
+    LazyCallGraph::RefSCC &CloneRC = CloneSCC->getOuterRefSCC();
+    assert(&RC == &CloneRC ||
+           RC.isAncestorOf(CloneRC) &&
+               "non-trivial reference edge to coroutine funclet");
+
+    // Now, we insert a trivial reference edge between the coroutine and this
+    // funclet. The insertion of a reference edge triggers SCC verification.
+    // An assert within 'LazyCallGraph::SCC::verify' insists that these members
+    // are set to -1. They're used in Tarjan's DFS algorithm when finding SCCs
+    // in the graph and constrcuting LazyCallGraph::SCC objects to represent
+    // those SCCs. But once the SCCs are constructed, these members are meant
+    // to be set with a default value of -1.
+    CloneNode.DFSNumber = CloneNode.LowLink = -1;
+    RC.insertTrivialRefEdge(*N, CloneNode);
+  }
 }
 
 // When we see the coroutine the first time, we insert an indirect call to a
@@ -1566,7 +1612,7 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
 
     SmallVector<Function *, 4> Clones;
     const coro::Shape Shape = splitCoroutine(*F, Clones);
-    updateCallGraphAfterCoroutineSplit(*F, Shape, Clones, C, CG, UR);
+    updateCallGraphAfterCoroutineSplit(*F, Shape, Clones, C, CG, AM, UR);
   }
 
   if (PrepareFn)
