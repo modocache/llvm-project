@@ -384,12 +384,14 @@ public:
     LazyCallGraph *G;
     Function *F;
 
+public:
     // We provide for the DFS numbering and Tarjan walk lowlink numbers to be
     // stored directly within the node. These are both '-1' when nodes are part
     // of an SCC (or RefSCC), or '0' when not yet reached in a DFS walk.
     int DFSNumber = 0;
     int LowLink = 0;
 
+private:
     Optional<EdgeSequence> Edges;
 
     /// Basic constructor implements the scanning of F into Edges and
@@ -433,8 +435,10 @@ public:
     friend class LazyCallGraph::Node;
 
     RefSCC *OuterRefSCC;
+  public:
     SmallVector<Node *, 1> Nodes;
 
+  private:
     template <typename NodeRangeT>
     SCC(RefSCC &OuterRefSCC, NodeRangeT &&Nodes)
         : OuterRefSCC(&OuterRefSCC), Nodes(std::forward<NodeRangeT>(Nodes)) {}
@@ -1122,9 +1126,11 @@ private:
   /// Allocator that holds all the call graph nodes.
   SpecificBumpPtrAllocator<Node> BPA;
 
+public:
   /// Maps function->node for fast lookup.
   DenseMap<const Function *, Node *> NodeMap;
 
+private:
   /// The entry edges into the graph.
   ///
   /// These edges are from "external" sources. Put another way, they
@@ -1134,9 +1140,11 @@ private:
   /// Allocator that holds all the call graph SCCs.
   SpecificBumpPtrAllocator<SCC> SCCBPA;
 
+public:
   /// Maps Function -> SCC for fast lookup.
   DenseMap<Node *, SCC *> SCCMap;
 
+private:
   /// Allocator that holds all the call graph RefSCCs.
   SpecificBumpPtrAllocator<RefSCC> RefSCCBPA;
 
