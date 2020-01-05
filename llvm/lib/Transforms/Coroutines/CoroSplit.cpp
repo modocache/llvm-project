@@ -48,6 +48,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/CallGraphUpdater.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
@@ -1373,7 +1374,7 @@ updateCallGraphAfterCoroutineSplit(Function &F, const coro::Shape &Shape,
 }
 
 static void updateCallGraphAfterCoroutineSplit(
-    Function &F, const coro::Shape &Shape,
+    LazyCallGraph::Node &N, const coro::Shape &Shape,
     const SmallVectorImpl<Function *> &Clones, LazyCallGraph::SCC &C,
     LazyCallGraph &CG, CGSCCAnalysisManager &AM, CGSCCUpdateResult &UR) {
   if (!Shape.CoroBegin)
@@ -1385,54 +1386,29 @@ static void updateCallGraphAfterCoroutineSplit(
     End->eraseFromParent();
   }
 
-  postSplitCleanup(F);
+  postSplitCleanup(N.getFunction());
 
-  LazyCallGraph::RefSCC &RC = C.getOuterRefSCC();
-  LazyCallGraph::Node *N = CG.lookup(F);
-  assert(N && "coroutine node not in call graph");
+  // To insert the newly created coroutine funclets 'f.resume', 'f.destroy', and
+  // 'f.cleanup' into the same SCC as the coroutine 'f' they were outlined from,
+  // we make use of the CallGraphUpdater class, which can modify the internal
+  // state of the LazyCallGraph.
+  CallGraphUpdater CGUpdater(CG, AM, UR);
+  for (Function *Clone : Clones)
+    CGUpdater.registerOutlinedFunction(*Clone, &C);
 
-  for (Function *Clone : Clones) {
-    LLVM_DEBUG(dbgs() << "CoroSplit: updateCallGraphAfterCoroutineSplit for '"
-                      << Clone->getName() << "'\n");
-
-    // Insert the new funclet into the call graph.
-    // Crucially, we need to ensure that the funclet is inserted into the same
-    // SCC as the coroutine it was outlined from, so that we may add a trivial
-    // reference edge from the coroutine to the funclet. Doing so requires
-    // reaching into the internal guts of the LazyCallGraph and directly
-    // manipulating its Node-to-SCC and Function-to-Node mappings.
-    LazyCallGraph::Node &CloneNode = CG.get(*Clone);
-    C.Nodes.push_back(&CloneNode);
-    CG.SCCMap[&CloneNode] = &C;
-    CG.NodeMap[Clone] = &CloneNode;
-
-    // Once inserted, we ought to be able to look up the SCC for the funclet.
-    LazyCallGraph::SCC *CloneSCC = CG.lookupSCC(CloneNode);
-    assert(CloneSCC && "coroutine funclet SCC not in call graph");
-
-    // Construct the outgoing edges from the coroutine funclet to other nodes
-    // in the graph.
-    CloneNode.populate();
-
-    // This mirrors an assertion made within
-    // 'LazyCallGraph::RefSCC::insertTrivialEdge'. We know for a fact that this
-    // is a trivial reference edge, because just above we've ensured that the
-    // funclet node's SCC is the same as the SCC we're operating upon.
-    LazyCallGraph::RefSCC &CloneRC = CloneSCC->getOuterRefSCC();
-    assert(&RC == &CloneRC ||
-           RC.isAncestorOf(CloneRC) &&
-               "non-trivial reference edge to coroutine funclet");
-
-    // Now, we insert a trivial reference edge between the coroutine and this
-    // funclet. The insertion of a reference edge triggers SCC verification.
-    // An assert within 'LazyCallGraph::SCC::verify' insists that these members
-    // are set to -1. They're used in Tarjan's DFS algorithm when finding SCCs
-    // in the graph and constrcuting LazyCallGraph::SCC objects to represent
-    // those SCCs. But once the SCCs are constructed, these members are meant
-    // to be set with a default value of -1.
-    CloneNode.DFSNumber = CloneNode.LowLink = -1;
-    RC.insertTrivialRefEdge(*N, CloneNode);
-  }
+  // We've inserted instructions into coroutine 'f' that reference the three new
+  // coroutine funclets. We must now update the call graph so that reference
+  // edges between 'f' and its funclets are added to it. LazyCallGraph only
+  // allows CGSCC passes to insert "trivial" reference edges. We've ensured
+  // above, by inserting the funclets into the same SCC as the corutine, that
+  // the edges are trivial.
+  //
+  // N.B.: If we didn't update the call graph here, a CGSCCToFunctionPassAdaptor
+  // later in this CGSCC pass pipeline may be run, triggering a call graph
+  // update of its own. Function passes run by the adaptor are not permitted to
+  // add new edges of any kind to the graph, and the new edges inserted by this
+  // pass would be misattributed to that unrelated function pass.
+  updateCGAndAnalysisManagerForCGSCCPass(CG, C, N, AM, UR);
 }
 
 // When we see the coroutine the first time, we insert an indirect call to a
@@ -1589,11 +1565,10 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
     PrepareFn = nullptr;
 
   // Find coroutines for processing.
-  SmallVector<Function *, 4> Coroutines;
-  for (const LazyCallGraph::Node &CGN : C) {
-    auto &F = CGN.getFunction();
-    if (F.hasFnAttribute(CORO_PRESPLIT_ATTR))
-      Coroutines.push_back(&F);
+  SmallVector<LazyCallGraph::Node *, 4> Coroutines;
+  for (LazyCallGraph::Node &N : C) {
+    if (N.getFunction().hasFnAttribute(CORO_PRESPLIT_ATTR))
+      Coroutines.push_back(&N);
   }
 
   if (Coroutines.empty() && !PrepareFn)
@@ -1604,15 +1579,33 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
                      "'llvm.coro.prepare.retcon'");
 
   // Split all the coroutines.
-  for (Function *F : Coroutines) {
-    LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F->getName()
-                      << "'\n");
-
-    F->removeFnAttr(CORO_PRESPLIT_ATTR);
+  for (LazyCallGraph::Node *N : Coroutines) {
+    Function &F = N->getFunction();
+    Attribute Attr = F.getFnAttribute(CORO_PRESPLIT_ATTR);
+    StringRef Value = Attr.getValueAsString();
+    LLVM_DEBUG(dbgs() << "CoroSplit: Processing coroutine '" << F.getName()
+                      << "' state: " << Value << "\n");
+    if (Value == UNPREPARED_FOR_SPLIT) {
+      // Enqueue a second iteration of the CGSCC pipeline.
+      // N.B.:
+      // The CoroSplitLegacy pass "triggers" a restart of the CGSCC pass
+      // pipeline by inserting an indirect function call that the
+      // CoroElideLegacy pass then replaces with a direct function call. The
+      // legacy CGSCC pipeline's implicit behavior was as if wrapped in the new
+      // pass manager abstraction DevirtSCCRepeatedPass.
+      //
+      // This pass does not need to "trigger" another run of the pipeline.
+      // Instead, it simply enqueues the same RefSCC onto the pipeline's
+      // worklist.
+      UR.RCWorklist.insert(&C.getOuterRefSCC());
+      F.addFnAttr(CORO_PRESPLIT_ATTR, PREPARED_FOR_SPLIT);
+      continue;
+    }
+    F.removeFnAttr(CORO_PRESPLIT_ATTR);
 
     SmallVector<Function *, 4> Clones;
-    const coro::Shape Shape = splitCoroutine(*F, Clones);
-    updateCallGraphAfterCoroutineSplit(*F, Shape, Clones, C, CG, AM, UR);
+    const coro::Shape Shape = splitCoroutine(F, Clones);
+    updateCallGraphAfterCoroutineSplit(*N, Shape, Clones, C, CG, AM, UR);
   }
 
   if (PrepareFn)
@@ -1624,6 +1617,14 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
 
 namespace {
 
+// We present a coroutine to LLVM as an ordinary function with suspension
+// points marked up with intrinsics. We let the optimizer party on the coroutine
+// as a single function for as long as possible. Shortly before the coroutine is
+// eligible to be inlined into its callers, we split up the coroutine into parts
+// corresponding to initial, resume and destroy invocations of the coroutine,
+// add them to the current SCC and restart the IPO pipeline to optimize the
+// coroutine subfunctions we extracted before proceeding to the caller of the
+// coroutine.
 struct CoroSplitLegacy : public CallGraphSCCPass {
   static char ID; // Pass identification, replacement for typeid
 
