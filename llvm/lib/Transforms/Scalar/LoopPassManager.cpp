@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Analysis/LoopInfo.h"
 
@@ -24,6 +25,7 @@ PreservedAnalyses
 PassManager<Loop, LoopAnalysisManager, LoopStandardAnalysisResults &,
             LPMUpdater &>::run(Loop &L, LoopAnalysisManager &AM,
                                LoopStandardAnalysisResults &AR, LPMUpdater &U) {
+  TimeTraceScope PMTimeScope(getTypeName<decltype(this)>(), L.getName());
   PreservedAnalyses PA = PreservedAnalyses::all();
 
   if (DebugLogging)
@@ -33,6 +35,7 @@ PassManager<Loop, LoopAnalysisManager, LoopStandardAnalysisResults &,
   // instrumenting callbacks for the passes later.
   PassInstrumentation PI = AM.getResult<PassInstrumentationAnalysis>(L, AR);
   for (auto &Pass : Passes) {
+    TimeTraceScope PassTimeScope(Pass->name(), L.getName());
     if (DebugLogging)
       dbgs() << "Running pass: " << Pass->name() << " on " << L;
 

@@ -24,6 +24,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/TimeProfiler.h"
 #include <algorithm>
 #include <cassert>
 #include <iterator>
@@ -54,6 +55,8 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
             CGSCCUpdateResult &>::run(LazyCallGraph::SCC &InitialC,
                                       CGSCCAnalysisManager &AM,
                                       LazyCallGraph &G, CGSCCUpdateResult &UR) {
+  TimeTraceScope PMTimeScope(getTypeName<decltype(this)>());
+
   // Request PassInstrumentation from analysis manager, will use it to run
   // instrumenting callbacks for the passes later.
   PassInstrumentation PI =
@@ -69,6 +72,7 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
   LazyCallGraph::SCC *C = &InitialC;
 
   for (auto &Pass : Passes) {
+    TimeTraceScope PassTimeScope(Pass->name());
     if (DebugLogging)
       dbgs() << "Running pass: " << Pass->name() << " on " << *C << "\n";
 

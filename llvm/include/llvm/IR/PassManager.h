@@ -47,6 +47,7 @@
 #include "llvm/IR/PassManagerInternal.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/TypeName.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -488,6 +489,7 @@ public:
   /// ExtraArgs are passed to each pass.
   PreservedAnalyses run(IRUnitT &IR, AnalysisManagerT &AM,
                         ExtraArgTs... ExtraArgs) {
+    TimeTraceScope PMTimeScope(getTypeName<decltype(this)>(), IR.getName());
     PreservedAnalyses PA = PreservedAnalyses::all();
 
     // Request PassInstrumentation from analysis manager, will use it to run
@@ -503,6 +505,7 @@ public:
 
     for (unsigned Idx = 0, Size = Passes.size(); Idx != Size; ++Idx) {
       auto *P = Passes[Idx].get();
+      TimeTraceScope PassTimeScope(P->name(), IR.getName());
       if (DebugLogging)
         dbgs() << "Running pass: " << P->name() << " on " << IR.getName()
                << "\n";
@@ -1193,6 +1196,8 @@ public:
     for (Function &F : M) {
       if (F.isDeclaration())
         continue;
+      
+      TimeTraceScope FunctionTimeScope(Pass.name(), F.getName());
 
       // Check the PassInstrumentation's BeforePass callbacks before running the
       // pass, skip its execution completely if asked to (callback returns

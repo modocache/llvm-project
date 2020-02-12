@@ -258,6 +258,20 @@ static cl::opt<bool> Coroutines(
   cl::desc("Enable coroutine passes."),
   cl::init(false), cl::Hidden);
 
+static cl::opt<bool> TimeTrace(
+    "time-trace",
+    cl::desc("Record time trace"));
+
+static cl::opt<unsigned> TimeTraceGranularity(
+    "time-trace-granularity",
+    cl::desc("Minimum time granularity (in microseconds) traced by time profiler"),
+    cl::init(500), cl::Hidden);
+
+static cl::opt<std::string>
+    TimeTraceFile("time-trace-file",
+                    cl::desc("Specify time trace file destination"),
+                    cl::value_desc("filename"));
+
 static cl::opt<bool> RemarksWithHotness(
     "pass-remarks-with-hotness",
     cl::desc("With PGO, include profile count in optimization remarks"),
@@ -509,6 +523,32 @@ void exportDebugifyStats(llvm::StringRef Path, const DebugifyStatsMap &Map) {
   }
 }
 
+struct TimeTracerRAII {
+  TimeTracerRAII(StringRef ProgramName) {
+    if (TimeTrace)
+      timeTraceProfilerInitialize(TimeTraceGranularity, ProgramName);
+  }
+  ~TimeTracerRAII() {
+    if (TimeTrace) {
+      // Write the result of the time trace profiler.
+      std::string Path = TimeTraceFile;
+      if (Path.empty()) {
+        if (OutputFilename == "-") {
+          Path = "out.time-trace";
+        } else {
+          Path = OutputFilename + ".time-trace";
+        }
+      }
+      std::error_code EC;
+      raw_fd_ostream TimeTraceOS(Path, EC, sys::fs::OF_Text);
+      if (EC)
+        report_fatal_error("cannot open " + Path + ": " + EC.message());
+      timeTraceProfilerWrite(TimeTraceOS);
+      timeTraceProfilerCleanup();
+    }
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // main for opt
 //
@@ -575,6 +615,8 @@ int main(int argc, char **argv) {
     errs() << argv[0] << ": analyze mode conflicts with no-output mode.\n";
     return 1;
   }
+
+  TimeTracerRAII TimeTracer(argv[0]);
 
   SMDiagnostic Err;
 
