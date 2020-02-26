@@ -23,6 +23,7 @@
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -584,7 +585,7 @@ static Instruction *splitBeforeCatchSwitch(CatchSwitchInst *CatchSwitch) {
 //    whatever
 //
 //
-static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
+static Instruction *insertSpills(Function &F, const SpillInfo &Spills, coro::Shape &Shape) {
   auto *CB = Shape.CoroBegin;
   LLVMContext &C = CB->getContext();
   IRBuilder<> Builder(CB->getNextNode());
@@ -638,11 +639,11 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
 
   // Create a load instruction to reload the spilled value from the coroutine
   // frame.
-  auto CreateReload = [&](Instruction *InsertBefore) {
+  auto CreateReload = [&](Instruction *InsertBefore, llvm::Value *& G) {
     assert(Index != InvalidFieldIndex && "accessing unassigned field number");
     Builder.SetInsertPoint(InsertBefore);
 
-    auto *G = GetFramePointer(Index, CurrentValue);
+    G = GetFramePointer(Index, CurrentValue);
     G->setName(CurrentValue->getName() + Twine(".reload.addr"));
 
     return isa<AllocaInst>(CurrentValue)
@@ -721,9 +722,10 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
     }
 
     // If we have not seen the use block, generate a reload in it.
+    llvm::Value *GEP = nullptr;
     if (CurrentBlock != E.userBlock()) {
       CurrentBlock = E.userBlock();
-      CurrentReload = CreateReload(&*CurrentBlock->getFirstInsertionPt());
+      CurrentReload = CreateReload(&*CurrentBlock->getFirstInsertionPt(), GEP);
     }
 
     // If we have a single edge PHINode, remove it and replace it with a reload
@@ -738,6 +740,8 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
     }
 
     // Replace all uses of CurrentValue in the current instruction with reload.
+    DIBuilder DIB(*F.getParent(), /*AllowUnresolved*/ false);
+    replaceDbgDeclare(CurrentValue, GEP, DIB, DIExpression::ApplyOffset, 0);
     E.user()->replaceUsesOfWith(CurrentValue, CurrentReload);
   }
 
@@ -1324,10 +1328,6 @@ static void eliminateSwiftError(Function &F, coro::Shape &Shape) {
 }
 
 void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
-  // Lower coro.dbg.declare to coro.dbg.value, since we are going to rewrite
-  // access to local variables.
-  LowerDbgDeclare(F);
-
   eliminateSwiftError(F, Shape);
 
   if (Shape.ABI == coro::ABI::Switch &&
@@ -1433,7 +1433,7 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
   }
   LLVM_DEBUG(dump("Spills", Spills));
   Shape.FrameTy = buildFrameType(F, Shape, Spills);
-  Shape.FramePtr = insertSpills(Spills, Shape);
+  Shape.FramePtr = insertSpills(F, Spills, Shape);
   lowerLocalAllocas(LocalAllocas, DeadInstructions);
 
   for (auto I : DeadInstructions)
