@@ -747,26 +747,29 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
       continue;
     }
 
-    // Replace all uses of CurrentValue in the current instruction with reload.
     dbgs() << ">>> CurrentValue: "; if (CurrentValue) { CurrentValue->dump(); } else { dbgs() << "nullptr\n"; }
     dbgs() << ">>> GEP:          "; if (GEP) { GEP->dump(); } else { dbgs() << "nullptr\n"; }
     dbgs() << ">>> CurrentGEP:   "; if (CurrentGEP) { CurrentGEP->dump(); } else { dbgs() << "nullptr\n"; }
     if (GEP != CurrentGEP) {
+      dbgs() << "+++ GEP != CurrentGEP\n";
       CurrentGEP = GEP;
       DIBuilder DIB(*CurrentBlock->getParent()->getParent(), /*AllowUnresolved*/ false);
-      auto DbgAddrs = FindDbgAddrUses(CurrentValue);
-      for (DbgVariableIntrinsic *DII : DbgAddrs) {
-        DebugLoc Loc = DII->getDebugLoc();
-        auto *DIVar = DII->getVariable();
-        auto *DIExpr = DII->getExpression();
-        assert(DIVar && "Missing variable");
-        DIExpr = DIExpression::prepend(DIExpr, DIExpression::ApplyOffset, 0);
+
+      // Migrate debug information for spilled values, from their alloca to
+      // their coroutine frame addresses.
+      TinyPtrVector<DbgVariableIntrinsic *> DI = FindDbgAddrUses(CurrentValue);
+      if (!DI.empty()) {
+        dbgs() << "+++ DII: "; DI.front()->dump();
         // Insert llvm.dbg.declare immediately before DII, and remove old
         // llvm.dbg.declare.
-        auto *R = DIB.insertDeclare(CurrentGEP, DIVar, DIExpr, Loc, DII);
+        auto *R = DIB.insertDeclare(CurrentGEP, DI.front()->getVariable(),
+                                    DI.front()->getExpression(),
+                                    DI.front()->getDebugLoc(), DI.front());
         dbgs() << ">>> adding DbgDeclare >>> "; R->dump();
       }
     }
+
+    // Replace all uses of CurrentValue in the current instruction with reload.
     E.user()->replaceUsesOfWith(CurrentValue, CurrentReload);
   }
 
