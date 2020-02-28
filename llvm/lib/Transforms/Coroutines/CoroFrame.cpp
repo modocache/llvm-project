@@ -638,8 +638,8 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
   };
 
   // Create a load instruction to reload the spilled value from the coroutine
-  // frame.
-  auto CreateReload = [&](Instruction *InsertBefore, llvm::Value *& G) {
+  // frame. Populates the Value pointer reference provided with the frame GEP.
+  auto CreateReload = [&](Instruction *InsertBefore, Value *&G) {
     assert(Index != InvalidFieldIndex && "accessing unassigned field number");
     Builder.SetInsertPoint(InsertBefore);
 
@@ -652,8 +652,7 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
                                     CurrentValue->getName() + Twine(".reload"));
   };
 
-  llvm::Value *GEP = nullptr;
-  llvm::Value *CurrentGEP = nullptr;
+  Value *GEP = nullptr, *CurrentGEP = nullptr;
   for (auto const &E : Spills) {
     // If we have not seen the value, generate a spill.
     if (CurrentValue != E.def()) {
@@ -740,18 +739,17 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
       continue;
     }
 
-    if (GEP != CurrentGEP) {
+    // If we have not seen this GEP instruction, migrate any dbg.declare from
+    // the alloca to it.
+    if (CurrentGEP != GEP) {
       CurrentGEP = GEP;
-      DIBuilder DIB(*CurrentBlock->getParent()->getParent(),
-                    /*AllowUnresolved*/ false);
-
-      // Migrate debug information for spilled values, from their alloca to
-      // their coroutine frame addresses.
       TinyPtrVector<DbgVariableIntrinsic *> DI = FindDbgAddrUses(CurrentValue);
       if (!DI.empty())
-        DIB.insertDeclare(CurrentGEP, DI.front()->getVariable(),
-                          DI.front()->getExpression(),
-                          DI.front()->getDebugLoc(), DI.front());
+        DIBuilder(*CurrentBlock->getParent()->getParent(),
+                  /*AllowUnresolved*/ false)
+            .insertDeclare(CurrentGEP, DI.front()->getVariable(),
+                           DI.front()->getExpression(),
+                           DI.front()->getDebugLoc(), DI.front());
     }
 
     // Replace all uses of CurrentValue in the current instruction with reload.
