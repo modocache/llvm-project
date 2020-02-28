@@ -654,7 +654,6 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
 
   llvm::Value *GEP = nullptr;
   llvm::Value *CurrentGEP = nullptr;
-  SmallVector<DbgVariableIntrinsic *, 16> OrigDbgs;
   for (auto const &E : Spills) {
     // If we have not seen the value, generate a spill.
     if (CurrentValue != E.def()) {
@@ -670,12 +669,6 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
         Allocas.emplace_back(AI, Index);
         if (!AI->isStaticAlloca())
           report_fatal_error("Coroutines cannot handle non static allocas yet");
-
-        SmallVector<DbgVariableIntrinsic *, 2> DbgUsers;
-        findDbgUsers(DbgUsers, AI);
-        for (auto *DI : DbgUsers) {
-          OrigDbgs.push_back(DI);
-        }
       } else {
         // Otherwise, create a store instruction storing the value into the
         // coroutine frame.
@@ -747,35 +740,22 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
       continue;
     }
 
-    // dbgs() << ">>> CurrentValue: "; if (CurrentValue) { CurrentValue->dump(); } else { dbgs() << "nullptr\n"; }
-    // dbgs() << ">>> GEP:          "; if (GEP) { GEP->dump(); } else { dbgs() << "nullptr\n"; }
-    // dbgs() << ">>> CurrentGEP:   "; if (CurrentGEP) { CurrentGEP->dump(); } else { dbgs() << "nullptr\n"; }
     if (GEP != CurrentGEP) {
-      // dbgs() << "+++ GEP != CurrentGEP\n";
       CurrentGEP = GEP;
-      DIBuilder DIB(*CurrentBlock->getParent()->getParent(), /*AllowUnresolved*/ false);
+      DIBuilder DIB(*CurrentBlock->getParent()->getParent(),
+                    /*AllowUnresolved*/ false);
 
       // Migrate debug information for spilled values, from their alloca to
       // their coroutine frame addresses.
       TinyPtrVector<DbgVariableIntrinsic *> DI = FindDbgAddrUses(CurrentValue);
-      if (!DI.empty()) {
-        // dbgs() << "+++ DII: "; DI.front()->dump();
-        // Insert llvm.dbg.declare immediately before DII, and remove old
-        // llvm.dbg.declare.
-        auto *R = DIB.insertDeclare(CurrentGEP, DI.front()->getVariable(),
-                                    DI.front()->getExpression(),
-                                    DI.front()->getDebugLoc(), DI.front());
-        // dbgs() << ">>> adding DbgDeclare >>> "; R->dump();
-        // R->getParent()->dump();
-      }
+      if (!DI.empty())
+        DIB.insertDeclare(CurrentGEP, DI.front()->getVariable(),
+                          DI.front()->getExpression(),
+                          DI.front()->getDebugLoc(), DI.front());
     }
 
     // Replace all uses of CurrentValue in the current instruction with reload.
     E.user()->replaceUsesOfWith(CurrentValue, CurrentReload);
-  }
-
-  for (auto *DI : OrigDbgs) {
-    DI->eraseFromParent();
   }
 
   BasicBlock *FramePtrBB = FramePtr->getParent();
@@ -784,14 +764,22 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
     FramePtrBB->splitBasicBlock(FramePtr->getNextNode(), "AllocaSpillBB");      
   SpillBlock->splitBasicBlock(&SpillBlock->front(), "PostSpill");
   Shape.AllocaSpillBlock = SpillBlock;
-  // If we found any allocas, replace all of their remaining uses with Geps.
-  // Note: we cannot do it indiscriminately as some of the uses may not be
-  // dominated by CoroBegin.
+  // If we found any alloca, replace all of their remaining uses with GEP
+  // instructions. Because new dbg.declare have been created for these alloca,
+  // we also delete the original dbg.declare.
+  // Note: We cannot do replace the alloca with GEP instructions
+  // indiscriminately, as some of the uses may not be dominated by CoroBegin.
   bool MightNeedToCopy = false;
   Builder.SetInsertPoint(&Shape.AllocaSpillBlock->front());
   SmallVector<Instruction *, 4> UsersToUpdate;
   for (auto &P : Allocas) {
     AllocaInst *const A = P.first;
+
+    SmallVector<DbgVariableIntrinsic *, 2> DbgUsers;
+    findDbgUsers(DbgUsers, A);
+    for (auto *DI : DbgUsers)
+      DI->eraseFromParent();
+
     UsersToUpdate.clear();
     for (User *U : A->users()) {
       auto *I = cast<Instruction>(U);
