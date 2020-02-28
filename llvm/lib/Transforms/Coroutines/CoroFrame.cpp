@@ -652,6 +652,8 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
                                     CurrentValue->getName() + Twine(".reload"));
   };
 
+  llvm::Value *GEP = nullptr;
+  llvm::Value *CurrentGEP = nullptr;
   for (auto const &E : Spills) {
     // If we have not seen the value, generate a spill.
     if (CurrentValue != E.def()) {
@@ -722,7 +724,6 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
     }
 
     // If we have not seen the use block, generate a reload in it.
-    llvm::Value *GEP = nullptr;
     if (CurrentBlock != E.userBlock()) {
       CurrentBlock = E.userBlock();
       CurrentReload = CreateReload(&*CurrentBlock->getFirstInsertionPt(), GEP);
@@ -740,8 +741,27 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
     }
 
     // Replace all uses of CurrentValue in the current instruction with reload.
-    DIBuilder DIB(*CurrentBlock->getParent()->getParent(), /*AllowUnresolved*/ false);
-    replaceDbgDeclare(CurrentValue, GEP, DIB, DIExpression::ApplyOffset, 0);
+    dbgs() << ">>> CurrentValue: "; if (CurrentValue) { CurrentValue->dump(); } else { dbgs() << "nullptr\n"; }
+    dbgs() << ">>> GEP:          "; if (GEP) { GEP->dump(); } else { dbgs() << "nullptr\n"; }
+    dbgs() << ">>> CurrentGEP:   "; if (CurrentGEP) { CurrentGEP->dump(); } else { dbgs() << "nullptr\n"; }
+    if (GEP != CurrentGEP) {
+      CurrentGEP = GEP;
+      DIBuilder DIB(*CurrentBlock->getParent()->getParent(), /*AllowUnresolved*/ false);
+      auto DbgAddrs = FindDbgAddrUses(CurrentValue);
+      for (DbgVariableIntrinsic *DII : DbgAddrs) {
+        DebugLoc Loc = DII->getDebugLoc();
+        auto *DIVar = DII->getVariable();
+        auto *DIExpr = DII->getExpression();
+        assert(DIVar && "Missing variable");
+        DIExpr = DIExpression::prepend(DIExpr, DIExpression::ApplyOffset, 0);
+        // Insert llvm.dbg.declare immediately before DII, and remove old
+        // llvm.dbg.declare.
+        auto *R = DIB.insertDeclare(CurrentGEP, DIVar, DIExpr, Loc, DII);
+        dbgs() << ">>> adding DbgDeclare >>> "; R->dump();
+        // DII->eraseFromParent();
+      }
+      // replaceDbgDeclare(CurrentValue, GEP, DIB, DIExpression::ApplyOffset, 0);
+    }
     E.user()->replaceUsesOfWith(CurrentValue, CurrentReload);
   }
 

@@ -1579,7 +1579,9 @@ bool llvm::replaceDbgDeclare(Value *Address, Value *NewAddress,
     DIExpr = DIExpression::prepend(DIExpr, DIExprFlags, Offset);
     // Insert llvm.dbg.declare immediately before DII, and remove old
     // llvm.dbg.declare.
-    Builder.insertDeclare(NewAddress, DIVar, DIExpr, Loc, DII);
+    auto *R = Builder.insertDeclare(NewAddress, DIVar, DIExpr, Loc, DII);
+    dbgs() << ">>> replaceDbgDeclare >>> Replacing: "; DII->dump();
+    dbgs() << ">>> replaceDbgDeclare >>> With:      "; R->dump();
     DII->eraseFromParent();
   }
   return !DbgAddrs.empty();
