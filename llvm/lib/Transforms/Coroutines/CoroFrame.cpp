@@ -765,9 +765,7 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
         // llvm.dbg.declare.
         auto *R = DIB.insertDeclare(CurrentGEP, DIVar, DIExpr, Loc, DII);
         dbgs() << ">>> adding DbgDeclare >>> "; R->dump();
-        // DII->eraseFromParent();
       }
-      // replaceDbgDeclare(CurrentValue, GEP, DIB, DIExpression::ApplyOffset, 0);
     }
     E.user()->replaceUsesOfWith(CurrentValue, CurrentReload);
   }
