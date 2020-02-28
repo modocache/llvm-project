@@ -654,6 +654,7 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
 
   llvm::Value *GEP = nullptr;
   llvm::Value *CurrentGEP = nullptr;
+  SmallVector<DbgVariableIntrinsic *, 16> OrigDbgs;
   for (auto const &E : Spills) {
     // If we have not seen the value, generate a spill.
     if (CurrentValue != E.def()) {
@@ -669,6 +670,12 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
         Allocas.emplace_back(AI, Index);
         if (!AI->isStaticAlloca())
           report_fatal_error("Coroutines cannot handle non static allocas yet");
+
+        SmallVector<DbgVariableIntrinsic *, 2> DbgUsers;
+        findDbgUsers(DbgUsers, AI);
+        for (auto *DI : DbgUsers) {
+          OrigDbgs.push_back(DI);
+        }
       } else {
         // Otherwise, create a store instruction storing the value into the
         // coroutine frame.
@@ -763,6 +770,10 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
       // replaceDbgDeclare(CurrentValue, GEP, DIB, DIExpression::ApplyOffset, 0);
     }
     E.user()->replaceUsesOfWith(CurrentValue, CurrentReload);
+  }
+
+  for (auto *DI : OrigDbgs) {
+    DI->eraseFromParent();
   }
 
   BasicBlock *FramePtrBB = FramePtr->getParent();
