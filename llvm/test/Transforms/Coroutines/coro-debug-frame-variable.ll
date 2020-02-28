@@ -51,18 +51,18 @@ entry:
   %alloc = call i1 @llvm.coro.alloc(token %id)
   br i1 %alloc, label %coro.alloc, label %coro.init
 
-coro.alloc:
+coro.alloc:                                       ; preds = %entry
   %size = call i64 @llvm.coro.size.i64()
   %memory = call i8* @new(i64 %size)
   br label %coro.init
 
-coro.init:
+coro.init:                                        ; preds = %coro.alloc, %entry
   %phi.entry.alloc = phi i8* [ null, %entry ], [ %memory, %coro.alloc ]
   %begin = call i8* @llvm.coro.begin(token %id, i8* %phi.entry.alloc)
   %ready = call i1 @await_ready()
   br i1 %ready, label %init.ready, label %init.suspend
 
-init.suspend:
+init.suspend:                                     ; preds = %coro.init
   %save = call token @llvm.coro.save(i8* null)
   call void @await_suspend()
   %suspend = call i8 @llvm.coro.suspend(token %save, i1 false)
@@ -71,12 +71,12 @@ init.suspend:
     i8 1, label %init.cleanup
   ]
 
-init.cleanup:
+init.cleanup:                                     ; preds = %init.suspend
   br label %cleanup
 
-init.ready:
+init.ready:                                       ; preds = %init.suspend, %coro.init
   call void @await_resume()
-  call void @llvm.dbg.declare(metadata i32* %i, metadata !659, metadata !DIExpression()), !dbg !661
+  call void @llvm.dbg.declare(metadata i32* %i, metadata !648, metadata !DIExpression()), !dbg !652
   store i32 0, i32* %i, align 4
   %i.init.ready.load = load i32, i32* %i, align 4
   %i.init.ready.inc = add nsw i32 %i.init.ready.load, 1
@@ -86,7 +86,7 @@ init.ready:
   %ready.again = call zeroext i1 @await_ready()
   br i1 %ready.again, label %await.ready, label %await.suspend
 
-await.suspend:
+await.suspend:                                    ; preds = %init.ready
   %save.again = call token @llvm.coro.save(i8* null)
   %from.address = call i8* @from_address(i8* %begin)
   call void @await_suspend()
@@ -96,12 +96,12 @@ await.suspend:
     i8 1, label %await.cleanup
   ]
 
-await.cleanup:
+await.cleanup:                                    ; preds = %await.suspend
   br label %cleanup
 
-await.ready:
+await.ready:                                      ; preds = %await.suspend, %init.ready
   call void @await_resume()
-  call void @llvm.dbg.declare(metadata i32* %j, metadata !667, metadata !DIExpression()), !dbg !668
+  call void @llvm.dbg.declare(metadata i32* %j, metadata !653, metadata !DIExpression()), !dbg !654
   store i32 0, i32* %j, align 4
   %i.await.ready.load = load i32, i32* %i, align 4
   %i.await.ready.inc = add nsw i32 %i.await.ready.load, 1
@@ -116,12 +116,12 @@ await.ready:
   call void @return_void()
   br label %coro.final
 
-coro.final:
+coro.final:                                       ; preds = %await.ready
   call void @final_suspend()
   %coro.final.await_ready = call i1 @await_ready()
   br i1 %coro.final.await_ready, label %final.ready, label %final.suspend
 
-final.suspend:
+final.suspend:                                    ; preds = %coro.final
   %final.suspend.coro.save = call token @llvm.coro.save(i8* null)
   %final.suspend.from_address = call i8* @from_address(i8* %begin)
   call void @await_suspend()
@@ -131,33 +131,33 @@ final.suspend:
     i8 1, label %final.cleanup
   ]
 
-final.cleanup:
+final.cleanup:                                    ; preds = %final.suspend
   br label %cleanup
 
-final.ready:
+final.ready:                                      ; preds = %final.suspend, %coro.final
   call void @await_resume()
   br label %cleanup
 
-cleanup:
+cleanup:                                          ; preds = %final.ready, %final.cleanup, %await.cleanup, %init.cleanup
   %cleanup.dest.slot.0 = phi i32 [ 0, %final.ready ], [ 2, %final.cleanup ], [ 2, %await.cleanup ], [ 2, %init.cleanup ]
   %free.memory = call i8* @llvm.coro.free(token %id, i8* %begin)
   %free = icmp ne i8* %free.memory, null
   br i1 %free, label %coro.free, label %after.coro.free
 
-coro.free:
+coro.free:                                        ; preds = %cleanup
   call void @delete(i8* %free.memory)
   br label %after.coro.free
 
-after.coro.free:
+after.coro.free:                                  ; preds = %coro.free, %cleanup
   switch i32 %cleanup.dest.slot.0, label %unreachable [
     i32 0, label %cleanup.cont
     i32 2, label %coro.ret
   ]
 
-cleanup.cont:
+cleanup.cont:                                     ; preds = %after.coro.free
   br label %coro.ret
 
-coro.ret:
+coro.ret:                                         ; preds = %cleanup.cont, %after.coro.free, %final.suspend, %await.suspend, %init.suspend
   %end = call i1 @llvm.coro.end(i8* null, i1 false)
   ret void
 
@@ -165,24 +165,55 @@ unreachable:                                      ; preds = %after.coro.free
   unreachable
 }
 
-declare void @llvm.dbg.declare(metadata, metadata, metadata)
-declare token @llvm.coro.id(i32, i8*, i8*, i8*)
-declare i1 @llvm.coro.alloc(token)
-declare i64 @llvm.coro.size.i64()
-declare token @llvm.coro.save(i8*)
-declare i8* @llvm.coro.begin(token, i8*)
-declare i8 @llvm.coro.suspend(token, i1)
-declare i8* @llvm.coro.free(token, i8*)
-declare i1 @llvm.coro.end(i8*, i1)
+; Function Attrs: nounwind readnone speculatable willreturn
+declare void @llvm.dbg.declare(metadata, metadata, metadata) #0
+
+; Function Attrs: argmemonly nounwind readonly
+declare token @llvm.coro.id(i32, i8* readnone, i8* nocapture readonly, i8*) #1
+
+; Function Attrs: nounwind
+declare i1 @llvm.coro.alloc(token) #2
+
+; Function Attrs: nounwind readnone
+declare i64 @llvm.coro.size.i64() #3
+
+; Function Attrs: nounwind
+declare token @llvm.coro.save(i8*) #2
+
+; Function Attrs: nounwind
+declare i8* @llvm.coro.begin(token, i8* writeonly) #2
+
+; Function Attrs: nounwind
+declare i8 @llvm.coro.suspend(token, i1) #2
+
+; Function Attrs: argmemonly nounwind readonly
+declare i8* @llvm.coro.free(token, i8* nocapture readonly) #1
+
+; Function Attrs: nounwind
+declare i1 @llvm.coro.end(i8*, i1) #2
+
 declare i8* @new(i64)
+
 declare void @delete(i8*)
+
 declare i1 @await_ready()
+
 declare void @await_suspend()
+
 declare void @await_resume()
+
 declare void @print(i32)
+
 declare i8* @from_address(i8*)
+
 declare void @return_void()
+
 declare void @final_suspend()
+
+attributes #0 = { nounwind readnone speculatable willreturn }
+attributes #1 = { argmemonly nounwind readonly }
+attributes #2 = { nounwind }
+attributes #3 = { nounwind readnone }
 
 !llvm.dbg.cu = !{!0}
 !llvm.linker.options = !{}
@@ -302,7 +333,7 @@ declare void @final_suspend()
 !110 = !DINamespace(name: "__1", scope: !12, exportSymbols: true)
 !111 = !DIDerivedType(tag: DW_TAG_typedef, name: "FILE", file: !112, line: 7, baseType: !113)
 !112 = !DIFile(filename: "/usr/include/x86_64-linux-gnu/bits/types/FILE.h", directory: "")
-!113 = !DICompositeType(tag: DW_TAG_structure_type, name: "_IO_FILE", file: !114, line: 49, flags: DIFlagFwdDecl, identifier: "_ZTS8_IO_FILE")
+!113 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "_IO_FILE", file: !114, line: 49, flags: DIFlagFwdDecl, identifier: "_ZTS8_IO_FILE")
 !114 = !DIFile(filename: "/usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h", directory: "")
 !115 = !DIFile(filename: "build/bin/../include/c++/v1/cstdio", directory: "/home/modocache/Source/llvm/git/dev/llvm-project")
 !116 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !117, file: !115, line: 108)
@@ -310,7 +341,7 @@ declare void @final_suspend()
 !118 = !DIFile(filename: "/usr/include/stdio.h", directory: "")
 !119 = !DIDerivedType(tag: DW_TAG_typedef, name: "__fpos_t", file: !120, line: 14, baseType: !121)
 !120 = !DIFile(filename: "/usr/include/x86_64-linux-gnu/bits/types/__fpos_t.h", directory: "")
-!121 = !DICompositeType(tag: DW_TAG_structure_type, name: "_G_fpos_t", file: !120, line: 10, flags: DIFlagFwdDecl, identifier: "_ZTS9_G_fpos_t")
+!121 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "_G_fpos_t", file: !120, line: 10, flags: DIFlagFwdDecl, identifier: "_ZTS9_G_fpos_t")
 !122 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !123, file: !115, line: 109)
 !123 = !DIDerivedType(tag: DW_TAG_typedef, name: "size_t", file: !124, line: 46, baseType: !125)
 !124 = !DIFile(filename: "build/lib/clang/11.0.0/include/stddef.h", directory: "/home/modocache/Source/llvm/git/dev/llvm-project")
@@ -361,7 +392,7 @@ declare void @final_suspend()
 !169 = !DISubroutineType(types: !170)
 !170 = !{!130, !138, !150, !171}
 !171 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !172, size: 64)
-!172 = !DICompositeType(tag: DW_TAG_structure_type, name: "__va_list_tag", file: !1, flags: DIFlagFwdDecl, identifier: "_ZTS13__va_list_tag")
+!172 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "__va_list_tag", file: !1, flags: DIFlagFwdDecl, identifier: "_ZTS13__va_list_tag")
 !173 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !174, file: !115, line: 121)
 !174 = !DISubprogram(name: "vfscanf", linkageName: "__isoc99_vfscanf", scope: !118, file: !118, line: 451, type: !169, flags: DIFlagPrototyped, spFlags: 0)
 !175 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !176, file: !115, line: 122)
@@ -496,13 +527,13 @@ declare void @final_suspend()
 !304 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !305, file: !302, line: 55)
 !305 = !DIDerivedType(tag: DW_TAG_typedef, name: "max_align_t", file: !306, line: 24, baseType: !307)
 !306 = !DIFile(filename: "build/lib/clang/11.0.0/include/__stddef_max_align_t.h", directory: "/home/modocache/Source/llvm/git/dev/llvm-project")
-!307 = !DICompositeType(tag: DW_TAG_structure_type, file: !306, line: 19, flags: DIFlagFwdDecl, identifier: "_ZTS11max_align_t")
+!307 = distinct !DICompositeType(tag: DW_TAG_structure_type, file: !306, line: 19, flags: DIFlagFwdDecl, identifier: "_ZTS11max_align_t")
 !308 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !123, file: !309, line: 99)
 !309 = !DIFile(filename: "build/bin/../include/c++/v1/cstdlib", directory: "/home/modocache/Source/llvm/git/dev/llvm-project")
 !310 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !311, file: !309, line: 100)
 !311 = !DIDerivedType(tag: DW_TAG_typedef, name: "div_t", file: !312, line: 62, baseType: !313)
 !312 = !DIFile(filename: "/usr/include/stdlib.h", directory: "")
-!313 = !DICompositeType(tag: DW_TAG_structure_type, file: !312, line: 58, flags: DIFlagFwdDecl, identifier: "_ZTS5div_t")
+!313 = distinct !DICompositeType(tag: DW_TAG_structure_type, file: !312, line: 58, flags: DIFlagFwdDecl, identifier: "_ZTS5div_t")
 !314 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !110, entity: !315, file: !309, line: 101)
 !315 = !DIDerivedType(tag: DW_TAG_typedef, name: "ldiv_t", file: !312, line: 70, baseType: !316)
 !316 = distinct !DICompositeType(tag: DW_TAG_structure_type, file: !312, line: 66, size: 128, flags: DIFlagTypePassByValue, elements: !317, identifier: "_ZTS6ldiv_t")
@@ -837,22 +868,10 @@ declare void @final_suspend()
 !645 = !{i32 2, !"Debug Info Version", i32 3}
 !646 = !{i32 1, !"wchar_size", i32 4}
 !647 = !{!"clang version 11.0.0 (https://github.com/llvm/llvm-project.git 9d85093c5147ac5b143b64a905b550d3b7f37332)"}
-!648 = distinct !DISubprogram(name: "foo", linkageName: "_Z3foov", scope: !5, file: !5, line: 23, type: !649, scopeLine: 23, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, retainedNodes: !2)
-!649 = !DISubroutineType(types: !3)
-!650 = !DILocation(line: 23, column: 12, scope: !648)
-!651 = !DILocation(line: 23, column: 6, scope: !648)
-!654 = !DIDerivedType(tag: DW_TAG_typedef, name: "promise_type", scope: !655, file: !9, line: 79, baseType: !64)
-!655 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "__coroutine_traits_sfinae<coro, void>", scope: !10, file: !9, line: 76, size: 8, flags: DIFlagTypePassByValue, elements: !2, templateParams: !656, identifier: "_ZTSNSt12experimental13coroutines_v125__coroutine_traits_sfinaeI4corovEE")
-!656 = !{!657, !658}
-!657 = !DITemplateTypeParameter(name: "_Tp", type: !4)
-!658 = !DITemplateTypeParameter(type: null)
-!659 = !DILocalVariable(name: "i", scope: !660, file: !5, line: 24, type: !130)
-!660 = distinct !DILexicalBlock(scope: !648, file: !5, line: 23, column: 12)
-!661 = !DILocation(line: 24, column: 7, scope: !660)
-!662 = !DILocation(line: 25, column: 3, scope: !660)
-!663 = !DILocation(line: 26, column: 18, scope: !660)
-!664 = !DILocation(line: 26, column: 3, scope: !660)
-!665 = !DILocation(line: 31, column: 12, scope: !660)
-!666 = !DILocation(line: 31, column: 3, scope: !660)
-!667 = !DILocalVariable(name: "j", scope: !660, file: !5, line: 32, type: !130)
-!668 = !DILocation(line: 32, column: 7, scope: !660)
+!648 = !DILocalVariable(name: "i", scope: !649, file: !5, line: 24, type: !130)
+!649 = distinct !DILexicalBlock(scope: !650, file: !5, line: 23, column: 12)
+!650 = distinct !DISubprogram(name: "foo", linkageName: "_Z3foov", scope: !5, file: !5, line: 23, type: !651, scopeLine: 23, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, retainedNodes: !2)
+!651 = !DISubroutineType(types: !3)
+!652 = !DILocation(line: 24, column: 7, scope: !649)
+!653 = !DILocalVariable(name: "j", scope: !649, file: !5, line: 32, type: !130)
+!654 = !DILocation(line: 32, column: 7, scope: !649)
