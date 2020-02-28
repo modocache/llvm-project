@@ -747,11 +747,11 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
       continue;
     }
 
-    dbgs() << ">>> CurrentValue: "; if (CurrentValue) { CurrentValue->dump(); } else { dbgs() << "nullptr\n"; }
-    dbgs() << ">>> GEP:          "; if (GEP) { GEP->dump(); } else { dbgs() << "nullptr\n"; }
-    dbgs() << ">>> CurrentGEP:   "; if (CurrentGEP) { CurrentGEP->dump(); } else { dbgs() << "nullptr\n"; }
+    // dbgs() << ">>> CurrentValue: "; if (CurrentValue) { CurrentValue->dump(); } else { dbgs() << "nullptr\n"; }
+    // dbgs() << ">>> GEP:          "; if (GEP) { GEP->dump(); } else { dbgs() << "nullptr\n"; }
+    // dbgs() << ">>> CurrentGEP:   "; if (CurrentGEP) { CurrentGEP->dump(); } else { dbgs() << "nullptr\n"; }
     if (GEP != CurrentGEP) {
-      dbgs() << "+++ GEP != CurrentGEP\n";
+      // dbgs() << "+++ GEP != CurrentGEP\n";
       CurrentGEP = GEP;
       DIBuilder DIB(*CurrentBlock->getParent()->getParent(), /*AllowUnresolved*/ false);
 
@@ -759,13 +759,14 @@ static Instruction *insertSpills(const SpillInfo &Spills, coro::Shape &Shape) {
       // their coroutine frame addresses.
       TinyPtrVector<DbgVariableIntrinsic *> DI = FindDbgAddrUses(CurrentValue);
       if (!DI.empty()) {
-        dbgs() << "+++ DII: "; DI.front()->dump();
+        // dbgs() << "+++ DII: "; DI.front()->dump();
         // Insert llvm.dbg.declare immediately before DII, and remove old
         // llvm.dbg.declare.
         auto *R = DIB.insertDeclare(CurrentGEP, DI.front()->getVariable(),
                                     DI.front()->getExpression(),
                                     DI.front()->getDebugLoc(), DI.front());
-        dbgs() << ">>> adding DbgDeclare >>> "; R->dump();
+        // dbgs() << ">>> adding DbgDeclare >>> "; R->dump();
+        // R->getParent()->dump();
       }
     }
 
